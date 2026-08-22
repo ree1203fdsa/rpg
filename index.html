@@ -166,6 +166,90 @@
             <button onclick="toggleInventory()">인벤토리 (I)</button>
             <button onclick="toggleShop()">상점 (P)</button>
             <button onclick="toggleRoulette()">룰렛 (R)</button>
+            <button id="admin-menu-btn" onclick="toggleAdmin()" style="display:none;">관리자 (~)</button>
+        </div>
+
+        <!-- Admin Panel -->
+        <div id="admin-panel" style="display:none;">
+            <div class="admin-header">
+                <h2>관리자 패널</h2>
+                <span id="admin-role-badge"></span>
+                <button onclick="toggleAdmin()">X</button>
+            </div>
+            <div class="admin-tabs">
+                <button class="admin-tab active" onclick="switchAdminTab('players')">플레이어</button>
+                <button class="admin-tab" onclick="switchAdminTab('give')">지급</button>
+                <button class="admin-tab" onclick="switchAdminTab('self')">내 설정</button>
+                <button class="admin-tab" id="super-tab" style="display:none;" onclick="switchAdminTab('super')">최고관리</button>
+            </div>
+            <div id="admin-tab-players" class="admin-content">
+                <button onclick="loadPlayerList()" class="admin-action-btn">플레이어 목록 새로고침</button>
+                <div id="player-list"></div>
+            </div>
+            <div id="admin-tab-give" class="admin-content" style="display:none;">
+                <div class="admin-field">
+                    <label>대상 닉네임</label>
+                    <input type="text" id="admin-target" placeholder="닉네임 입력">
+                </div>
+                <div class="admin-field">
+                    <label>코인 지급</label>
+                    <div class="admin-row">
+                        <input type="number" id="admin-coins" value="100">
+                        <button onclick="adminGiveCoins()">지급</button>
+                    </div>
+                </div>
+                <div class="admin-field">
+                    <label>다이아 지급</label>
+                    <div class="admin-row">
+                        <input type="number" id="admin-diamonds" value="10">
+                        <button onclick="adminGiveDiamonds()">지급</button>
+                    </div>
+                </div>
+                <div class="admin-field">
+                    <label>HP 설정</label>
+                    <div class="admin-row">
+                        <input type="number" id="admin-hp" value="100">
+                        <button onclick="adminSetHp()">설정</button>
+                    </div>
+                </div>
+                <div class="admin-field">
+                    <label>스테이지 설정</label>
+                    <div class="admin-row">
+                        <input type="number" id="admin-stage" value="1" min="1" max="3">
+                        <button onclick="adminSetStage()">설정</button>
+                    </div>
+                </div>
+                <div class="admin-field">
+                    <button onclick="adminResetPlayer()" class="admin-danger-btn">대상 초기화</button>
+                </div>
+                <div id="admin-give-msg"></div>
+            </div>
+            <div id="admin-tab-self" class="admin-content" style="display:none;">
+                <button onclick="adminGodMode()" class="admin-action-btn" id="godmode-btn">갓모드 ON</button>
+                <button onclick="adminTeleport('village')" class="admin-action-btn">마을로 이동</button>
+                <button onclick="adminTeleport('mountain')" class="admin-action-btn">산으로 이동</button>
+                <button onclick="adminTeleport('mine')" class="admin-action-btn">폐광으로 이동</button>
+                <button onclick="adminTeleport('boss')" class="admin-action-btn">보스방으로 이동</button>
+                <button onclick="adminMaxStats()" class="admin-action-btn">스탯 최대화</button>
+                <button onclick="adminSpawnSnake()" class="admin-action-btn">독사 소환</button>
+                <button onclick="adminSpawnBoss()" class="admin-action-btn">보스 소환</button>
+            </div>
+            <div id="admin-tab-super" class="admin-content" style="display:none;">
+                <div class="admin-field">
+                    <label>권한 변경 대상</label>
+                    <input type="text" id="admin-role-target" placeholder="닉네임 입력">
+                </div>
+                <div class="admin-row">
+                    <button onclick="adminSetRole('admin')" class="admin-action-btn">관리자 부여</button>
+                    <button onclick="adminSetRole('player')" class="admin-danger-btn">관리자 해제</button>
+                </div>
+                <div class="admin-field">
+                    <label>플레이어 삭제</label>
+                    <input type="text" id="admin-delete-target" placeholder="삭제할 닉네임">
+                    <button onclick="adminDeletePlayer()" class="admin-danger-btn">삭제</button>
+                </div>
+                <div id="admin-super-msg"></div>
+            </div>
         </div>
 
         <!-- Crosshair -->

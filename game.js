@@ -34,8 +34,24 @@ window.toggleRoulette = toggleRoulette;
 window.spinRoulette = spinRoulette;
 window.closeDocument = closeDocument;
 window.buyItem = buyItem;
+window.toggleAdmin = toggleAdmin;
+window.switchAdminTab = switchAdminTab;
+window.loadPlayerList = loadPlayerList;
+window.adminGiveCoins = adminGiveCoins;
+window.adminGiveDiamonds = adminGiveDiamonds;
+window.adminSetHp = adminSetHp;
+window.adminSetStage = adminSetStage;
+window.adminResetPlayer = adminResetPlayer;
+window.adminGodMode = adminGodMode;
+window.adminTeleport = adminTeleport;
+window.adminMaxStats = adminMaxStats;
+window.adminSpawnSnake = adminSpawnSnake;
+window.adminSpawnBoss = adminSpawnBoss;
+window.adminSetRole = adminSetRole;
+window.adminDeletePlayer = adminDeletePlayer;
 
 let currentPlayer = null;
+let godMode = false;
 let scene, camera, renderer, clock;
 let playerBody;
 let pitch = 0, yaw = 0;
@@ -235,6 +251,10 @@ async function startGame() {
     document.getElementById('login-screen').style.display = 'none';
     document.getElementById('game-container').style.display = 'block';
     document.getElementById('player-name-display').textContent = currentPlayer.nickname;
+
+    if (currentPlayer.role === 'admin' || currentPlayer.role === 'superadmin') {
+        document.getElementById('admin-menu-btn').style.display = 'inline-block';
+    }
 
     gameState.coins = currentPlayer.coins || 0;
     gameState.diamonds = currentPlayer.diamonds || 0;
@@ -594,6 +614,7 @@ function setupControls() {
         if (e.code === 'KeyI') toggleInventory();
         if (e.code === 'KeyP') toggleShop();
         if (e.code === 'KeyR' && !gameState.inCombat) toggleRoulette();
+        if (e.code === 'Backquote') toggleAdmin();
     });
     document.addEventListener('keyup', (e) => { keys[e.code] = false; });
 
@@ -1321,6 +1342,7 @@ function startCombat(enemy) {
 }
 
 function damagePlayer(dmg) {
+    if (godMode) return;
     gameState.playerHp -= dmg;
     showDamageNumber(dmg, playerBody.position, true);
     updateHUD();
@@ -1655,6 +1677,179 @@ async function saveGameData() {
 }
 
 setInterval(() => { if (currentPlayer) saveGameData(); }, 30000);
+
+// ==================== ADMIN SYSTEM ====================
+function toggleAdmin() {
+    if (!currentPlayer || (currentPlayer.role !== 'admin' && currentPlayer.role !== 'superadmin')) return;
+    const panel = document.getElementById('admin-panel');
+    panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+    if (panel.style.display === 'block') {
+        document.getElementById('admin-role-badge').textContent = currentPlayer.role === 'superadmin' ? '최고관리자' : '관리자';
+        if (currentPlayer.role === 'superadmin') document.getElementById('super-tab').style.display = 'block';
+        loadPlayerList();
+    }
+}
+
+function switchAdminTab(tab) {
+    document.querySelectorAll('.admin-content').forEach(el => el.style.display = 'none');
+    document.querySelectorAll('.admin-tab').forEach(el => el.classList.remove('active'));
+    document.getElementById('admin-tab-' + tab).style.display = 'flex';
+    event.target.classList.add('active');
+}
+
+async function loadPlayerList() {
+    const list = document.getElementById('player-list');
+    list.innerHTML = '<span style="color:#a78bfa">로딩 중...</span>';
+    const players = await dbGet('players');
+    if (!players) { list.innerHTML = '<span style="color:#ef4444">데이터 없음</span>'; return; }
+    list.innerHTML = '';
+    Object.entries(players).forEach(([name, p]) => {
+        const roleClass = p.role === 'superadmin' ? 'role-superadmin' : p.role === 'admin' ? 'role-admin' : '';
+        const roleText = p.role === 'superadmin' ? '최고관리자' : p.role === 'admin' ? '관리자' : '일반';
+        const card = document.createElement('div');
+        card.className = 'player-card';
+        card.innerHTML = `<span class="name">${name}</span><span class="info">S${p.currentStage || 1} | 코인:${p.coins || 0} | HP:${p.hp || 0}</span><span class="${roleClass}">${roleText}</span>`;
+        card.style.cursor = 'pointer';
+        card.onclick = () => { document.getElementById('admin-target').value = name; switchAdminTab('give'); document.querySelectorAll('.admin-tab').forEach(t => t.classList.remove('active')); document.querySelectorAll('.admin-tab')[1].classList.add('active'); };
+        list.appendChild(card);
+    });
+}
+
+function adminMsg(id, text, color) {
+    const el = document.getElementById(id);
+    el.textContent = text;
+    el.style.color = color || '#4ade80';
+    setTimeout(() => el.textContent = '', 3000);
+}
+
+async function adminGiveCoins() {
+    const target = document.getElementById('admin-target').value.trim();
+    const amount = parseInt(document.getElementById('admin-coins').value) || 0;
+    if (!target) { adminMsg('admin-give-msg', '대상을 입력하세요', '#ef4444'); return; }
+    const p = await dbGet('players/' + target);
+    if (!p) { adminMsg('admin-give-msg', '존재하지 않는 유저', '#ef4444'); return; }
+    await dbSet('players/' + target + '/coins', (p.coins || 0) + amount);
+    if (target === currentPlayer.nickname) { gameState.coins += amount; updateHUD(); }
+    adminMsg('admin-give-msg', target + '에게 코인 ' + amount + ' 지급 완료');
+}
+
+async function adminGiveDiamonds() {
+    const target = document.getElementById('admin-target').value.trim();
+    const amount = parseInt(document.getElementById('admin-diamonds').value) || 0;
+    if (!target) { adminMsg('admin-give-msg', '대상을 입력하세요', '#ef4444'); return; }
+    const p = await dbGet('players/' + target);
+    if (!p) { adminMsg('admin-give-msg', '존재하지 않는 유저', '#ef4444'); return; }
+    await dbSet('players/' + target + '/diamonds', (p.diamonds || 0) + amount);
+    if (target === currentPlayer.nickname) { gameState.diamonds += amount; updateHUD(); }
+    adminMsg('admin-give-msg', target + '에게 다이아 ' + amount + ' 지급 완료');
+}
+
+async function adminSetHp() {
+    const target = document.getElementById('admin-target').value.trim();
+    const hp = parseInt(document.getElementById('admin-hp').value) || 100;
+    if (!target) { adminMsg('admin-give-msg', '대상을 입력하세요', '#ef4444'); return; }
+    await dbSet('players/' + target + '/hp', hp);
+    await dbSet('players/' + target + '/maxHp', hp);
+    if (target === currentPlayer.nickname) { gameState.playerHp = hp; gameState.playerMaxHp = hp; updateHUD(); }
+    adminMsg('admin-give-msg', target + ' HP를 ' + hp + '으로 설정');
+}
+
+async function adminSetStage() {
+    const target = document.getElementById('admin-target').value.trim();
+    const stage = parseInt(document.getElementById('admin-stage').value) || 1;
+    if (!target) { adminMsg('admin-give-msg', '대상을 입력하세요', '#ef4444'); return; }
+    await dbSet('players/' + target + '/currentStage', stage);
+    if (stage === 1) await dbSet('players/' + target + '/completedQuests', {});
+    adminMsg('admin-give-msg', target + ' 스테이지를 ' + stage + '로 설정');
+}
+
+async function adminResetPlayer() {
+    const target = document.getElementById('admin-target').value.trim();
+    if (!target) { adminMsg('admin-give-msg', '대상을 입력하세요', '#ef4444'); return; }
+    const p = await dbGet('players/' + target);
+    if (!p) { adminMsg('admin-give-msg', '존재하지 않는 유저', '#ef4444'); return; }
+    const reset = { nickname: target, password: p.password, x: 0, y: 0, z: 0, coins: 0, diamonds: 0, hp: 100, maxHp: 100, inventory: {}, tools: {}, currentStage: 1, completedQuests: [], deaths: 0 };
+    if (p.role) reset.role = p.role;
+    if (p.resetOnLogin) reset.resetOnLogin = true;
+    await dbSet('players/' + target, reset);
+    adminMsg('admin-give-msg', target + ' 데이터 초기화 완료');
+}
+
+function adminGodMode() {
+    godMode = !godMode;
+    const btn = document.getElementById('godmode-btn');
+    btn.textContent = godMode ? '갓모드 OFF' : '갓모드 ON';
+    btn.classList.toggle('active', godMode);
+    showInvestigationText(godMode ? '갓모드 활성화! 무적 상태입니다.' : '갓모드 비활성화');
+}
+
+function adminTeleport(location) {
+    const positions = {
+        village: [0, PLAYER_HEIGHT, 0],
+        mountain: [0, PLAYER_HEIGHT, -45],
+        mine: [-30, PLAYER_HEIGHT, -54],
+        boss: [-15, -10 + PLAYER_HEIGHT, -95]
+    };
+    const pos = positions[location];
+    if (location === 'boss') gameState.insideMine = true;
+    else if (location !== 'mine') gameState.insideMine = false;
+    playerBody.position.set(pos[0], pos[1], pos[2]);
+    if (gameState.insideMine) {
+        scene.background = new THREE.Color(0x111111);
+        scene.fog = new THREE.Fog(0x111111, 5, 30);
+    } else {
+        scene.background = new THREE.Color(0x87CEEB);
+        scene.fog = new THREE.Fog(0x87CEEB, 60, 250);
+    }
+    showInvestigationText(location + '(으)로 이동!');
+}
+
+function adminMaxStats() {
+    gameState.coins += 9999;
+    gameState.diamonds += 999;
+    gameState.playerHp = 999;
+    gameState.playerMaxHp = 999;
+    updateHUD();
+    showInvestigationText('스탯 최대화!');
+}
+
+function adminSpawnSnake() {
+    const px = playerBody.position.x + Math.sin(yaw) * -8;
+    const pz = playerBody.position.z + Math.cos(yaw) * -8;
+    spawnSnake(px, gameState.insideMine ? -10 : 0, pz);
+    showInvestigationText('독사 소환!');
+}
+
+function adminSpawnBoss() {
+    const px = playerBody.position.x + Math.sin(yaw) * -10;
+    const pz = playerBody.position.z + Math.cos(yaw) * -10;
+    spawnShadowBoss(px, gameState.insideMine ? -10 : 0, pz);
+    showInvestigationText('보스 소환!');
+}
+
+async function adminSetRole(role) {
+    if (currentPlayer.role !== 'superadmin') { adminMsg('admin-super-msg', '최고관리자만 가능', '#ef4444'); return; }
+    const target = document.getElementById('admin-role-target').value.trim();
+    if (!target) { adminMsg('admin-super-msg', '대상을 입력하세요', '#ef4444'); return; }
+    if (target === currentPlayer.nickname) { adminMsg('admin-super-msg', '자신의 권한은 변경 불가', '#ef4444'); return; }
+    const p = await dbGet('players/' + target);
+    if (!p) { adminMsg('admin-super-msg', '존재하지 않는 유저', '#ef4444'); return; }
+    if (p.role === 'superadmin') { adminMsg('admin-super-msg', '최고관리자는 변경 불가', '#ef4444'); return; }
+    await dbSet('players/' + target + '/role', role);
+    adminMsg('admin-super-msg', target + ' 권한: ' + (role === 'admin' ? '관리자' : '일반'));
+}
+
+async function adminDeletePlayer() {
+    if (currentPlayer.role !== 'superadmin') { adminMsg('admin-super-msg', '최고관리자만 가능', '#ef4444'); return; }
+    const target = document.getElementById('admin-delete-target').value.trim();
+    if (!target) { adminMsg('admin-super-msg', '대상을 입력하세요', '#ef4444'); return; }
+    if (target === currentPlayer.nickname) { adminMsg('admin-super-msg', '자신은 삭제 불가', '#ef4444'); return; }
+    const p = await dbGet('players/' + target);
+    if (!p) { adminMsg('admin-super-msg', '존재하지 않는 유저', '#ef4444'); return; }
+    if (p.role === 'superadmin') { adminMsg('admin-super-msg', '최고관리자는 삭제 불가', '#ef4444'); return; }
+    await fetch(getDbUrl() + 'players/' + target + '.json', { method: 'DELETE' });
+    adminMsg('admin-super-msg', target + ' 삭제 완료');
+}
 
 // Shake animation
 const shakeStyle = document.createElement('style');
