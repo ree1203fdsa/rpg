@@ -144,9 +144,7 @@ async function loadModel(name) {
     if (modelCache[name]) return modelCache[name].clone();
     if (!loader) throw new Error('GLTFLoader not available');
     return new Promise((resolve, reject) => {
-        const timeout = setTimeout(() => reject(new Error('Load timeout: ' + name)), 5000);
         loader.load(ASSET_PATH + name, (gltf) => {
-            clearTimeout(timeout);
             const model = gltf.scene;
             model.traverse(child => {
                 if (child.isMesh) {
@@ -156,10 +154,7 @@ async function loadModel(name) {
             });
             modelCache[name] = model;
             resolve(model.clone());
-        }, undefined, (err) => {
-            clearTimeout(timeout);
-            reject(err);
-        });
+        }, undefined, reject);
     });
 }
 
