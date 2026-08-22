@@ -1778,7 +1778,8 @@ function createOnlinePlayer(name, info) {
         group.add(arm);
     }
 
-    group.position.set(info.x || 0, info.y || PLAYER_HEIGHT, info.z || 0);
+    const groundY = info.inMine ? -10 : 0;
+    group.position.set(info.x || 0, groundY, info.z || 0);
     scene.add(group);
 
     const labelDiv = document.createElement('div');
@@ -1786,13 +1787,13 @@ function createOnlinePlayer(name, info) {
     labelDiv.textContent = name;
     document.getElementById('game-container').appendChild(labelDiv);
 
-    onlineModels[name] = { group, label: labelDiv, targetPos: new THREE.Vector3(info.x || 0, info.y || PLAYER_HEIGHT, info.z || 0) };
+    onlineModels[name] = { group, label: labelDiv, targetPos: new THREE.Vector3(info.x || 0, groundY, info.z || 0) };
 }
 
 function updateOnlinePlayer(name, info) {
     const om = onlineModels[name];
     if (!om) return;
-    const ty = info.inMine ? -10 + PLAYER_HEIGHT : PLAYER_HEIGHT;
+    const ty = info.inMine ? -10 : 0;
     om.targetPos.set(info.x || 0, ty, info.z || 0);
     om.group.rotation.y = info.rotY || 0;
 
