@@ -52,6 +52,8 @@ window.adminDeletePlayer = adminDeletePlayer;
 
 let currentPlayer = null;
 let godMode = false;
+let onlinePlayers = {};
+let onlineModels = {};
 let scene, camera, renderer, clock;
 let playerBody;
 let pitch = 0, yaw = 0;
@@ -288,6 +290,7 @@ async function startGame() {
     renderInventoryGrid();
     renderShop();
     drawRoulette();
+    startOnlineSync();
     gameLoop();
 }
 
@@ -701,6 +704,7 @@ function gameLoop() {
     updateArrow();
     updateMineEffects();
     checkSnakeArea();
+    updateOnlineLabels();
     renderer.render(scene, camera);
 }
 
@@ -1677,6 +1681,164 @@ async function saveGameData() {
 }
 
 setInterval(() => { if (currentPlayer) saveGameData(); }, 30000);
+
+// ==================== ONLINE MULTIPLAYER ====================
+function startOnlineSync() {
+    uploadPosition();
+    setInterval(uploadPosition, 1500);
+    setInterval(syncOnlinePlayers, 2000);
+}
+
+async function uploadPosition() {
+    if (!currentPlayer) return;
+    const data = {
+        x: Math.round(playerBody.position.x * 10) / 10,
+        y: Math.round(playerBody.position.y * 10) / 10,
+        z: Math.round(playerBody.position.z * 10) / 10,
+        rotY: Math.round(yaw * 100) / 100,
+        stage: gameState.stage,
+        inMine: gameState.insideMine,
+        hp: gameState.playerHp,
+        maxHp: gameState.playerMaxHp,
+        lastSeen: Date.now()
+    };
+    try {
+        await fetch(getDbUrl() + 'online/' + currentPlayer.nickname + '.json', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data)
+        });
+    } catch (e) {}
+}
+
+async function syncOnlinePlayers() {
+    if (!currentPlayer || !scene) return;
+    try {
+        const res = await fetch(getDbUrl() + 'online.json');
+        const data = await res.json();
+        if (!data) return;
+
+        const now = Date.now();
+        const activeNames = new Set();
+        let count = 0;
+
+        for (const [name, info] of Object.entries(data)) {
+            if (name === currentPlayer.nickname) { count++; continue; }
+            if (now - info.lastSeen > 15000) {
+                if (onlineModels[name]) removeOnlinePlayer(name);
+                continue;
+            }
+            count++;
+            activeNames.add(name);
+
+            if (!onlineModels[name]) {
+                createOnlinePlayer(name, info);
+            }
+            updateOnlinePlayer(name, info);
+        }
+
+        for (const name of Object.keys(onlineModels)) {
+            if (!activeNames.has(name)) removeOnlinePlayer(name);
+        }
+
+        document.getElementById('online-count').textContent = '온라인: ' + count;
+    } catch (e) {}
+}
+
+function createOnlinePlayer(name, info) {
+    const group = new THREE.Group();
+
+    const body = new THREE.Mesh(
+        new THREE.BoxGeometry(0.6, 1.0, 0.4),
+        new THREE.MeshLambertMaterial({ color: 0x6d28d9 })
+    );
+    body.position.y = 0.7;
+    body.castShadow = true;
+    group.add(body);
+
+    const head = new THREE.Mesh(
+        new THREE.SphereGeometry(0.3, 8, 8),
+        new THREE.MeshLambertMaterial({ color: 0xffcc88 })
+    );
+    head.position.y = 1.5;
+    head.castShadow = true;
+    group.add(head);
+
+    const legMat = new THREE.MeshLambertMaterial({ color: 0x333366 });
+    for (const lx of [-0.15, 0.15]) {
+        const leg = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.5, 0.25), legMat);
+        leg.position.set(lx, 0.25, 0);
+        group.add(leg);
+    }
+
+    const armMat = new THREE.MeshLambertMaterial({ color: 0x7c3aed });
+    for (const ax of [-0.45, 0.45]) {
+        const arm = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.6, 0.2), armMat);
+        arm.position.set(ax, 0.7, 0);
+        group.add(arm);
+    }
+
+    group.position.set(info.x || 0, info.y || PLAYER_HEIGHT, info.z || 0);
+    scene.add(group);
+
+    const labelDiv = document.createElement('div');
+    labelDiv.className = 'player-label';
+    labelDiv.textContent = name;
+    document.getElementById('game-container').appendChild(labelDiv);
+
+    onlineModels[name] = { group, label: labelDiv, targetPos: new THREE.Vector3(info.x || 0, info.y || PLAYER_HEIGHT, info.z || 0) };
+}
+
+function updateOnlinePlayer(name, info) {
+    const om = onlineModels[name];
+    if (!om) return;
+    const ty = info.inMine ? -10 + PLAYER_HEIGHT : PLAYER_HEIGHT;
+    om.targetPos.set(info.x || 0, ty, info.z || 0);
+    om.group.rotation.y = info.rotY || 0;
+
+    const sameArea = info.inMine === gameState.insideMine;
+    om.group.visible = sameArea;
+    om.label.style.display = sameArea ? 'block' : 'none';
+}
+
+function removeOnlinePlayer(name) {
+    const om = onlineModels[name];
+    if (!om) return;
+    scene.remove(om.group);
+    om.label.remove();
+    delete onlineModels[name];
+}
+
+function updateOnlineLabels() {
+    for (const [name, om] of Object.entries(onlineModels)) {
+        if (!om.group.visible) continue;
+
+        const g = om.group;
+        const curr = g.position;
+        curr.lerp(om.targetPos, 0.1);
+
+        g.children.forEach((child, i) => {
+            if (i >= 3) {
+                child.rotation.x = Math.sin(Date.now() * 0.005 + (i === 3 ? 0 : Math.PI)) * 0.3;
+            }
+        });
+
+        const pos = new THREE.Vector3(curr.x, curr.y + 0.5, curr.z);
+        pos.project(camera);
+        if (pos.z > 1 || pos.z < -1) { om.label.style.display = 'none'; continue; }
+        const hw = window.innerWidth / 2, hh = window.innerHeight / 2;
+        om.label.style.left = (pos.x * hw + hw) + 'px';
+        om.label.style.top = (-pos.y * hh + hh - 30) + 'px';
+        om.label.style.display = 'block';
+    }
+}
+
+function goOffline() {
+    if (currentPlayer) {
+        navigator.sendBeacon(getDbUrl() + 'online/' + currentPlayer.nickname + '.json', 'null');
+    }
+}
+window.addEventListener('beforeunload', goOffline);
 
 // ==================== ADMIN SYSTEM ====================
 function toggleAdmin() {
