@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>미스테리 RPG</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <!-- Login/Register Screen -->
+    <div id="login-screen">
+        <div class="login-container">
+            <h1 class="game-title">미스테리 RPG</h1>
+            <div class="login-box">
+                <div id="login-tab-buttons">
+                    <button class="tab-btn active" onclick="switchTab('login')">로그인</button>
+                    <button class="tab-btn" onclick="switchTab('register')">회원가입</button>
+                </div>
+                <div id="login-form">
+                    <input type="text" id="login-nickname" placeholder="닉네임" required>
+                    <input type="password" id="login-password" placeholder="비밀번호" required>
+                    <button id="login-btn" onclick="handleLogin()">로그인</button>
+                </div>
+                <div id="register-form" style="display:none;">
+                    <input type="text" id="reg-nickname" placeholder="닉네임 (필수)" required>
+                    <input type="password" id="reg-password" placeholder="비밀번호 (필수)" required>
+                    <button id="reg-btn" onclick="handleRegister()">회원가입</button>
+                </div>
+                <p id="auth-message"></p>
+                <div class="db-config">
+                    <details>
+                        <summary>데이터베이스 설정</summary>
+                        <input type="text" id="db-url" placeholder="Firebase Realtime DB URL" value="https://rpg-gaim-default-rtdb.asia-southeast1.firebasedatabase.app/">
+                    </details>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Game Container -->
+    <div id="game-container" style="display:none;">
+        <!-- 3D Canvas rendered by Three.js -->
+        <canvas id="game-canvas"></canvas>
+
+        <!-- HUD -->
+        <div id="hud">
+            <div id="player-info">
+                <div id="player-name-display"></div>
+                <div id="health-bar-container">
+                    <div id="health-bar"></div>
+                    <span id="health-text">100 / 100</span>
+                </div>
+                <div id="currency-display">
+                    <span id="coin-display">코인: 0</span>
+                    <span id="diamond-display">다이아: 0</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Quest Display -->
+        <div id="quest-display" style="display:none;">
+            <div id="quest-text"></div>
+        </div>
+
+        <!-- Enemy HP Bar -->
+        <div id="enemy-hp-container" style="display:none;">
+            <div id="enemy-name"></div>
+            <div id="enemy-hp-bar-bg">
+                <div id="enemy-hp-bar"></div>
+            </div>
+            <span id="enemy-hp-text"></span>
+        </div>
+
+        <!-- Dialogue Box -->
+        <div id="dialogue-box" style="display:none;">
+            <div id="dialogue-speaker"></div>
+            <div id="dialogue-text"></div>
+            <div id="dialogue-prompt">F키를 누르시오.</div>
+        </div>
+
+        <!-- Interaction Prompt -->
+        <div id="interact-prompt" style="display:none;">
+            <span>F키를 누르시오.</span>
+        </div>
+
+        <!-- Investigation Text -->
+        <div id="investigation-text" style="display:none;"></div>
+
+        <!-- Stage Transition -->
+        <div id="stage-transition" style="display:none;">
+            <div id="stage-text"></div>
+        </div>
+
+        <!-- Death Screen -->
+        <div id="death-screen" style="display:none;">
+            <div class="death-content">
+                <h2>사망했습니다</h2>
+                <button id="respawn-btn" onclick="respawnPlayer()">부활</button>
+            </div>
+        </div>
+
+        <!-- Item Acquired Notification -->
+        <div id="item-notification" style="display:none;">
+            <div id="item-notif-text"></div>
+        </div>
+
+        <!-- Damage Numbers -->
+        <div id="damage-numbers"></div>
+
+        <!-- Inventory -->
+        <div id="inventory-screen" style="display:none;">
+            <div class="inventory-header">
+                <h2>인벤토리</h2>
+                <button onclick="toggleInventory()">X</button>
+            </div>
+            <div id="inventory-grid"></div>
+            <div id="item-detail" style="display:none;">
+                <div id="item-detail-name"></div>
+                <div id="item-detail-desc"></div>
+                <button id="item-use-btn" style="display:none;">사용</button>
+            </div>
+        </div>
+
+        <!-- Shop -->
+        <div id="shop-screen" style="display:none;">
+            <div class="shop-header">
+                <h2>상점</h2>
+                <button onclick="toggleShop()">X</button>
+            </div>
+            <div id="shop-items"></div>
+        </div>
+
+        <!-- Roulette -->
+        <div id="roulette-screen" style="display:none;">
+            <div class="roulette-header">
+                <h2>룰렛</h2>
+                <button onclick="toggleRoulette()">X</button>
+            </div>
+            <canvas id="roulette-canvas" width="300" height="300"></canvas>
+            <button id="roulette-spin-btn" onclick="spinRoulette()">돌리기 (10 코인)</button>
+            <div id="roulette-result"></div>
+        </div>
+
+        <!-- Document Viewer -->
+        <div id="document-viewer" style="display:none;">
+            <div class="doc-header">
+                <h2 id="doc-title"></h2>
+                <button onclick="closeDocument()">X</button>
+            </div>
+            <div id="doc-content"></div>
+        </div>
+
+        <!-- Mobile Joystick -->
+        <div id="mobile-joystick" style="display:none;">
+            <div id="joystick-base">
+                <div id="joystick-thumb"></div>
+            </div>
+        </div>
+
+        <!-- Mobile Attack Button -->
+        <div id="mobile-attack-btn" style="display:none;">공격</div>
+        <div id="mobile-interact-btn" style="display:none;">F</div>
+
+        <!-- Menu Buttons -->
+        <div id="menu-buttons">
+            <button onclick="toggleInventory()">인벤토리 (I)</button>
+            <button onclick="toggleShop()">상점 (P)</button>
+            <button onclick="toggleRoulette()">룰렛 (R)</button>
+        </div>
+
+        <!-- Crosshair -->
+        <div id="crosshair">+</div>
+
+        <!-- Mini Instructions -->
+        <div id="controls-hint">
+            WASD/방향키: 이동 | 마우스: 시점 | 클릭: 공격 | F: 상호작용 | I: 인벤토리
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="GLTFLoader.js"></script>
+    <script src="game.js"></script>
+</body>
+</html>
