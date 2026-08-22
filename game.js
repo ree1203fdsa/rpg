@@ -1,0 +1,1667 @@
+// Three.js and GLTFLoader loaded via script tags (global THREE object)
+
+// ==================== FIREBASE CONFIG ====================
+let DB_URL = 'https://rpg-gaim-default-rtdb.asia-southeast1.firebasedatabase.app/';
+
+function getDbUrl() {
+    const input = document.getElementById('db-url');
+    if (input && input.value.trim()) DB_URL = input.value.trim();
+    if (!DB_URL.endsWith('/')) DB_URL += '/';
+    return DB_URL;
+}
+
+async function dbGet(path) {
+    const res = await fetch(getDbUrl() + path + '.json');
+    return res.json();
+}
+
+async function dbSet(path, data) {
+    await fetch(getDbUrl() + path + '.json', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data)
+    });
+}
+
+// ==================== GLOBALS ====================
+window.switchTab = switchTab;
+window.handleLogin = handleLogin;
+window.handleRegister = handleRegister;
+window.respawnPlayer = respawnPlayer;
+window.toggleInventory = toggleInventory;
+window.toggleShop = toggleShop;
+window.toggleRoulette = toggleRoulette;
+window.spinRoulette = spinRoulette;
+window.closeDocument = closeDocument;
+window.buyItem = buyItem;
+
+let currentPlayer = null;
+let scene, camera, renderer, clock;
+let playerBody;
+let pitch = 0, yaw = 0;
+let isPointerLocked = false;
+let isMobile = false;
+let joystickActive = false, joystickDir = { x: 0, y: 0 };
+let keys = {};
+
+const loader = (typeof THREE.GLTFLoader === 'function') ? new THREE.GLTFLoader() : null;
+const modelCache = {};
+const ASSET_PATH = 'assets/models/';
+const PLAYER_SPEED = 8;
+const PLAYER_HEIGHT = 1.7;
+
+let npcs = [], enemies = [], interactables = [];
+let arrowHelper = null;
+let buildings = {};
+let mineObjects = {};
+
+let gameState = {
+    stage: 1, quest: null, questStep: 0,
+    inDialogue: false, dialogueQueue: [], dialogueCallback: null,
+    inCombat: false, currentEnemy: null,
+    canInteract: false, interactTarget: null,
+    playerHp: 100, playerMaxHp: 100,
+    coins: 0, diamonds: 0,
+    inventory: [], tools: [], equippedWeapon: null,
+    completedQuests: [],
+    hasMovedStage1: false, hasMovedStage2: false,
+    snakeDeaths: 0, stage2Phase: 0,
+    mineTracesFound: 0, stonesActivated: 0,
+    insideMine: false, mineCollapsed: false,
+    documentRead: false, bossRoomReached: false
+};
+
+// ==================== ASSET LOADER ====================
+function addMesh(group, geo, color, x, y, z, emissive) {
+    const m = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ color, emissive: emissive || 0x000000 }));
+    m.position.set(x, y, z);
+    m.castShadow = true;
+    m.receiveShadow = true;
+    group.add(m);
+    return m;
+}
+
+function createFallbackModel(name) {
+    const g = new THREE.Group();
+    try {
+        if (name.startsWith('tree-pine')) {
+            addMesh(g, new THREE.CylinderGeometry(0.1, 0.15, 1, 6), 0x8B4513, 0, 0.5, 0);
+            addMesh(g, new THREE.ConeGeometry(0.6, 1.5, 8), 0x228B22, 0, 1.8, 0);
+            addMesh(g, new THREE.ConeGeometry(0.45, 1.2, 8), 0x2E8B57, 0, 2.8, 0);
+        } else if (name.startsWith('tree')) {
+            addMesh(g, new THREE.CylinderGeometry(0.12, 0.18, 1.2, 6), 0x8B4513, 0, 0.6, 0);
+            addMesh(g, new THREE.SphereGeometry(0.8, 8, 8), 0x2E8B57, 0, 1.8, 0);
+        } else if (name.startsWith('block-snow')) {
+            const h = name.includes('tall') ? 1.5 : 1;
+            addMesh(g, new THREE.BoxGeometry(1, h, 1), 0xcccccc, 0, h / 2, 0);
+        } else if (name.startsWith('block-grass')) {
+            const h = name.includes('tall') ? 1.5 : 1;
+            addMesh(g, new THREE.BoxGeometry(1, h, 1), 0x5a8a4a, 0, h / 2, 0);
+        } else if (name.startsWith('door')) {
+            addMesh(g, new THREE.BoxGeometry(0.8, 1.2, 0.1), 0x8B4513, 0, 0.6, 0);
+        } else if (name.startsWith('fence')) {
+            addMesh(g, new THREE.BoxGeometry(1.5, 0.5, 0.08), 0x9E7E56, 0, 0.35, 0);
+            addMesh(g, new THREE.BoxGeometry(0.06, 0.7, 0.06), 0x8B7355, -0.6, 0.35, 0);
+            addMesh(g, new THREE.BoxGeometry(0.06, 0.7, 0.06), 0x8B7355, 0.6, 0.35, 0);
+        } else if (name === 'barrel.glb') {
+            addMesh(g, new THREE.CylinderGeometry(0.3, 0.35, 0.7, 8), 0x8B5E3C, 0, 0.35, 0);
+        } else if (name.startsWith('crate')) {
+            addMesh(g, new THREE.BoxGeometry(0.6, 0.6, 0.6), 0x9E7E56, 0, 0.3, 0);
+        } else if (name.startsWith('character-oopi')) {
+            addMesh(g, new THREE.BoxGeometry(0.5, 0.8, 0.3), 0xaa3333, 0, 0.6, 0);
+            addMesh(g, new THREE.SphereGeometry(0.25, 8, 8), 0xffcc88, 0, 1.25, 0);
+        } else if (name.startsWith('character-ooli')) {
+            addMesh(g, new THREE.BoxGeometry(0.5, 0.8, 0.3), 0x3355aa, 0, 0.6, 0);
+            addMesh(g, new THREE.SphereGeometry(0.25, 8, 8), 0xffcc88, 0, 1.25, 0);
+        } else if (name === 'rocks.glb' || name === 'stones.glb') {
+            addMesh(g, new THREE.DodecahedronGeometry(0.3), 0x888888, 0, 0.2, 0);
+            addMesh(g, new THREE.DodecahedronGeometry(0.2), 0x777777, 0.3, 0.15, 0.1);
+        } else if (name === 'sign.glb') {
+            addMesh(g, new THREE.CylinderGeometry(0.04, 0.04, 1, 6), 0x8B4513, 0, 0.5, 0);
+            addMesh(g, new THREE.BoxGeometry(0.6, 0.35, 0.05), 0xC4A46C, 0, 0.9, 0);
+        } else if (name === 'flag.glb') {
+            addMesh(g, new THREE.CylinderGeometry(0.03, 0.03, 1.5, 6), 0x8B4513, 0, 0.75, 0);
+            addMesh(g, new THREE.BoxGeometry(0.4, 0.25, 0.02), 0xcc2222, 0.2, 1.3, 0);
+        } else if (name === 'coin-gold.glb') {
+            addMesh(g, new THREE.CylinderGeometry(0.2, 0.2, 0.05, 16), 0xFFD700, 0, 0.1, 0, 0x332200);
+        } else if (name === 'ladder.glb') {
+            addMesh(g, new THREE.BoxGeometry(0.06, 1.5, 0.06), 0x8B4513, -0.2, 0.75, 0);
+            addMesh(g, new THREE.BoxGeometry(0.06, 1.5, 0.06), 0x8B4513, 0.2, 0.75, 0);
+            for (let r = 0; r < 4; r++) addMesh(g, new THREE.BoxGeometry(0.34, 0.04, 0.06), 0x9E7E56, 0, 0.3 + r * 0.35, 0);
+        } else if (name.startsWith('flowers') || name.startsWith('mushroom') || name === 'grass.glb' || name === 'plant.glb') {
+            const colors = { 'flowers.glb': 0xff6699, 'flowers-tall.glb': 0xff99cc, 'mushrooms.glb': 0xcc4444, 'grass.glb': 0x44aa44, 'plant.glb': 0x33aa33 };
+            addMesh(g, new THREE.SphereGeometry(0.15, 6, 6), colors[name] || 0x44aa44, 0, 0.15, 0);
+        } else {
+            addMesh(g, new THREE.BoxGeometry(0.5, 0.5, 0.5), 0xaa66cc, 0, 0.25, 0);
+        }
+    } catch (e) {
+        addMesh(g, new THREE.BoxGeometry(0.3, 0.3, 0.3), 0xff00ff, 0, 0.15, 0);
+    }
+    return g;
+}
+
+async function loadModel(name) {
+    if (modelCache[name]) return modelCache[name].clone();
+    if (!loader) throw new Error('GLTFLoader not available');
+    return new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error('Load timeout: ' + name)), 5000);
+        loader.load(ASSET_PATH + name, (gltf) => {
+            clearTimeout(timeout);
+            const model = gltf.scene;
+            model.traverse(child => {
+                if (child.isMesh) {
+                    child.castShadow = true;
+                    child.receiveShadow = true;
+                }
+            });
+            modelCache[name] = model;
+            resolve(model.clone());
+        }, undefined, (err) => {
+            clearTimeout(timeout);
+            reject(err);
+        });
+    });
+}
+
+async function placeModel(name, x, y, z, scale = 1, rotY = 0) {
+    let model;
+    try {
+        model = await loadModel(name);
+    } catch (e) {
+        model = createFallbackModel(name);
+    }
+    if (!model) model = createFallbackModel(name);
+    model.position.set(x, y, z);
+    if (typeof scale === 'number') model.scale.set(scale, scale, scale);
+    else model.scale.set(scale[0], scale[1], scale[2]);
+    model.rotation.y = rotY;
+    scene.add(model);
+    return model;
+}
+
+// ==================== AUTH ====================
+function switchTab(tab) {
+    document.getElementById('login-form').style.display = tab === 'login' ? 'block' : 'none';
+    document.getElementById('register-form').style.display = tab === 'register' ? 'block' : 'none';
+    const btns = document.querySelectorAll('.tab-btn');
+    btns.forEach(b => b.classList.remove('active'));
+    btns[tab === 'login' ? 0 : 1].classList.add('active');
+}
+
+async function handleRegister() {
+    const nick = document.getElementById('reg-nickname').value.trim();
+    const pass = document.getElementById('reg-password').value.trim();
+    const msg = document.getElementById('auth-message');
+    if (!nick || !pass) { msg.textContent = '닉네임과 비밀번호를 입력하세요.'; return; }
+    if (nick.length < 2) { msg.textContent = '닉네임은 2자 이상이어야 합니다.'; return; }
+    const existing = await dbGet('players/' + nick);
+    if (existing) { msg.textContent = '이미 존재하는 닉네임입니다.'; return; }
+    await dbSet('players/' + nick, {
+        nickname: nick, password: pass,
+        x: 0, y: 0, z: 0,
+        coins: 0, diamonds: 0, hp: 100, maxHp: 100,
+        inventory: {}, tools: {},
+        currentStage: 1, completedQuests: [], deaths: 0
+    });
+    msg.style.color = '#4ade80';
+    msg.textContent = '회원가입 성공! 로그인하세요.';
+    switchTab('login');
+}
+
+async function handleLogin() {
+    const nick = document.getElementById('login-nickname').value.trim();
+    const pass = document.getElementById('login-password').value.trim();
+    const msg = document.getElementById('auth-message');
+    if (!nick || !pass) { msg.textContent = '닉네임과 비밀번호를 입력하세요.'; return; }
+    const data = await dbGet('players/' + nick);
+    if (!data) { msg.textContent = '존재하지 않는 닉네임입니다.'; return; }
+    if (data.password !== pass) { msg.textContent = '비밀번호가 틀렸습니다.'; return; }
+    currentPlayer = data;
+    currentPlayer.nickname = nick;
+    if (data.resetOnLogin) {
+        currentPlayer.coins = 0;
+        currentPlayer.diamonds = 0;
+        currentPlayer.hp = 100;
+        currentPlayer.maxHp = 100;
+        currentPlayer.currentStage = 1;
+        currentPlayer.completedQuests = [];
+        currentPlayer.inventory = {};
+        currentPlayer.deaths = 0;
+        currentPlayer.x = 0;
+        currentPlayer.y = 0;
+        currentPlayer.z = 0;
+        await dbSet('players/' + nick, currentPlayer);
+    }
+    startGame();
+}
+
+// ==================== GAME START ====================
+async function startGame() {
+    document.getElementById('login-screen').style.display = 'none';
+    document.getElementById('game-container').style.display = 'block';
+    document.getElementById('player-name-display').textContent = currentPlayer.nickname;
+
+    gameState.coins = currentPlayer.coins || 0;
+    gameState.diamonds = currentPlayer.diamonds || 0;
+    gameState.playerHp = currentPlayer.hp || 100;
+    gameState.playerMaxHp = currentPlayer.maxHp || 100;
+    gameState.stage = currentPlayer.currentStage || 1;
+    gameState.completedQuests = currentPlayer.completedQuests || [];
+    if (currentPlayer.inventory) {
+        Object.values(currentPlayer.inventory).forEach(item => { if (item) gameState.inventory.push(item); });
+    }
+
+    updateHUD();
+    initThreeJS();
+    setupControls();
+    detectMobile();
+
+    try {
+        await buildWorld();
+    } catch (e) {
+        console.error('buildWorld error:', e);
+    }
+
+    if (gameState.stage === 1 && !gameState.completedQuests.includes('stage1_complete')) {
+        startStage1();
+    } else if (!gameState.completedQuests.includes('stage2_complete')) {
+        startStage2();
+    } else {
+        showStageComplete('게임 클리어!', 3000);
+    }
+
+    renderInventoryGrid();
+    renderShop();
+    drawRoulette();
+    gameLoop();
+}
+
+function initThreeJS() {
+    scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x87CEEB);
+    scene.fog = new THREE.Fog(0x87CEEB, 60, 250);
+
+    camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 500);
+    renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('game-canvas'), antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.2;
+    clock = new THREE.Clock();
+
+    // Lighting
+    scene.add(new THREE.AmbientLight(0x8899bb, 0.6));
+    const dirLight = new THREE.DirectionalLight(0xffeedd, 1.0);
+    dirLight.position.set(50, 80, 30);
+    dirLight.castShadow = true;
+    dirLight.shadow.mapSize.set(2048, 2048);
+    dirLight.shadow.camera.near = 0.5;
+    dirLight.shadow.camera.far = 200;
+    dirLight.shadow.camera.left = -100;
+    dirLight.shadow.camera.right = 100;
+    dirLight.shadow.camera.top = 100;
+    dirLight.shadow.camera.bottom = -100;
+    scene.add(dirLight);
+    scene.add(new THREE.HemisphereLight(0x87CEEB, 0x362907, 0.4));
+
+    playerBody = new THREE.Group();
+    playerBody.position.set(0, PLAYER_HEIGHT, 0);
+    scene.add(playerBody);
+    playerBody.add(camera);
+    camera.position.set(0, 0, 0);
+
+    window.addEventListener('resize', () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+}
+
+// ==================== WORLD BUILDING ====================
+function createBox(w, h, d, color, x, y, z) {
+    const mesh = new THREE.Mesh(
+        new THREE.BoxGeometry(w, h, d),
+        new THREE.MeshLambertMaterial({ color })
+    );
+    mesh.position.set(x, y, z);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    scene.add(mesh);
+    return mesh;
+}
+
+async function buildWorld() {
+    // Ground
+    const ground = new THREE.Mesh(
+        new THREE.PlaneGeometry(300, 300),
+        new THREE.MeshLambertMaterial({ color: 0x4a7c3f })
+    );
+    ground.rotation.x = -Math.PI / 2;
+    ground.receiveShadow = true;
+    scene.add(ground);
+
+    // Dirt paths
+    const pathMat = new THREE.MeshLambertMaterial({ color: 0x8B7355 });
+    const path1 = new THREE.Mesh(new THREE.PlaneGeometry(4, 80), pathMat);
+    path1.rotation.x = -Math.PI / 2; path1.position.set(0, 0.02, -20); scene.add(path1);
+    const path2 = new THREE.Mesh(new THREE.PlaneGeometry(60, 4), pathMat.clone());
+    path2.rotation.x = -Math.PI / 2; path2.position.set(10, 0.02, 0); scene.add(path2);
+
+    // Load all 3D assets in parallel
+    const tasks = [];
+
+    // === VILLAGE TREES ===
+    const treePositions = [
+        [-20, 5], [-18, -5], [-25, 10], [15, 8], [18, -8],
+        [-10, -15], [12, -12], [-22, 20], [20, 20], [-5, 25],
+        [-15, -25], [10, -20], [-8, -35], [8, -35], [-15, -40],
+        [12, -42], [-5, -50], [5, -48], [-12, -55], [8, -55]
+    ];
+    for (const [x, z] of treePositions) {
+        const treeName = Math.random() > 0.5 ? 'tree.glb' : 'tree-pine.glb';
+        tasks.push(placeModel(treeName, x, 0, z, 2 + Math.random()));
+    }
+
+    // === PLAYER HOUSE ===
+    // Build with grass blocks
+    tasks.push(placeModel('block-grass-large.glb', -8, 0, 5, 3));
+    tasks.push(placeModel('block-grass-large-tall.glb', -8, 0, 5, 2.5));
+    // Door
+    tasks.push(placeModel('door-open.glb', -5.5, 0, 5, 2).then(m => { if(m) buildings.playerDoor = m; }));
+
+    // === OTHER VILLAGE HOUSES ===
+    tasks.push(placeModel('block-grass-large-tall.glb', -15, 0, -10, 2.5));
+    tasks.push(placeModel('door-open.glb', -12.5, 0, -10, 2));
+    tasks.push(placeModel('block-grass-large-tall.glb', 8, 0, 12, 2.5));
+    tasks.push(placeModel('door-open.glb', 10.5, 0, 12, 2));
+    tasks.push(placeModel('block-grass-large.glb', -12, 0, 15, 2));
+
+    // === CASTLE (Village Chief) ===
+    // Castle walls with blocks
+    const castleBlocks = [];
+    for (let bx = 0; bx < 4; bx++) {
+        for (let bz = 0; bz < 3; bz++) {
+            tasks.push(placeModel('block-snow-large-tall.glb', 24 + bx * 4, 0, -4 + bz * 4, 2));
+        }
+    }
+    // Castle towers
+    for (const [tx, tz] of [[23, -6], [37, -6], [23, 6], [37, 6]]) {
+        tasks.push(placeModel('block-snow-large-tall.glb', tx, 0, tz, 1.5));
+        tasks.push(placeModel('block-snow-large-tall.glb', tx, 3, tz, 1.5));
+        tasks.push(placeModel('flag.glb', tx, 7, tz, 2));
+    }
+    // Castle door
+    tasks.push(placeModel('door-rotate-large.glb', 23, 0, -4, 3).then(m => {
+        if (m) {
+            m.userData = { name: 'castleDoor', type: 'door', isOpen: false };
+            buildings.castleDoor = m;
+            interactables.push(m);
+        }
+    }));
+
+    // === VILLAGE DECORATIONS ===
+    // Fences around village
+    for (let i = 0; i < 8; i++) {
+        tasks.push(placeModel('fence-straight.glb', -25 + i * 7, 0, 30, 2, 0));
+    }
+    for (let i = 0; i < 8; i++) {
+        tasks.push(placeModel('fence-straight.glb', -25 + i * 7, 0, -20, 2, 0));
+    }
+
+    // Barrels and crates in village
+    tasks.push(placeModel('barrel.glb', -6, 0, 8, 1.5));
+    tasks.push(placeModel('barrel.glb', -7, 0, 9, 1.5));
+    tasks.push(placeModel('crate.glb', -10, 0, 8, 1.5));
+    tasks.push(placeModel('crate-item.glb', 10, 0, 14, 1.5));
+    tasks.push(placeModel('barrel.glb', 6, 0, 14, 1.5));
+
+    // Flowers and plants
+    for (let i = 0; i < 15; i++) {
+        const fx = (Math.random() - 0.5) * 60;
+        const fz = (Math.random() - 0.5) * 40 + 5;
+        const flowerType = ['flowers.glb', 'flowers-tall.glb', 'grass.glb', 'plant.glb', 'mushrooms.glb'][Math.floor(Math.random() * 5)];
+        tasks.push(placeModel(flowerType, fx, 0, fz, 1.5 + Math.random()));
+    }
+
+    // Rocks decorations
+    tasks.push(placeModel('rocks.glb', -20, 0, 0, 2));
+    tasks.push(placeModel('stones.glb', 15, 0, -5, 2));
+    tasks.push(placeModel('rocks.glb', -5, 0, -20, 2));
+
+    // Signs
+    tasks.push(placeModel('sign.glb', 2, 0, 2, 2, Math.PI));
+
+    // Coins scattered in village (decorative)
+    for (let i = 0; i < 5; i++) {
+        tasks.push(placeModel('coin-gold.glb', Math.random() * 20 - 10, 0.5, Math.random() * 20 - 5, 1.5));
+    }
+
+    // === MOUNTAINS ===
+    const mountainGeo = new THREE.ConeGeometry(25, 30, 8);
+    const mountain = new THREE.Mesh(mountainGeo, new THREE.MeshLambertMaterial({ color: 0x6B8E23 }));
+    mountain.position.set(0, 10, -60); mountain.castShadow = true; scene.add(mountain);
+    const m2 = new THREE.Mesh(new THREE.ConeGeometry(20, 25, 8), new THREE.MeshLambertMaterial({ color: 0x556B2F }));
+    m2.position.set(-20, 8, -70); scene.add(m2);
+    const m3 = new THREE.Mesh(new THREE.ConeGeometry(18, 22, 8), new THREE.MeshLambertMaterial({ color: 0x4a6b3f }));
+    m3.position.set(20, 7, -65); scene.add(m3);
+
+    // === SNAKE AREA ===
+    const snakeArea = createBox(1, 0.1, 1, 0x333333, 0, 0.05, -45);
+    snakeArea.userData = { name: 'snakeArea', type: 'area' };
+    buildings.snakeArea = snakeArea;
+
+    // Mountain path decorations
+    const mountainPath = new THREE.Mesh(new THREE.PlaneGeometry(3, 40), new THREE.MeshLambertMaterial({ color: 0x7a6b55 }));
+    mountainPath.rotation.x = -Math.PI / 2; mountainPath.position.set(0, 0.02, -30); scene.add(mountainPath);
+
+    // === NPC: Village Chief ===
+    const chiefModel = await placeModel('character-oopi.glb', 30, 0, 0, 2);
+    if (chiefModel) {
+        chiefModel.userData = { name: '마을 이장', type: 'npc', dialogueState: 0 };
+        npcs.push(chiefModel);
+    }
+
+    // === NPC: Villager ===
+    const villagerModel = await placeModel('character-ooli.glb', -5, 0, 8, 2);
+    if (villagerModel) {
+        villagerModel.userData = { name: '마을 주민', type: 'npc', dialogueState: 0 };
+        npcs.push(villagerModel);
+    }
+
+    // === MINE ENTRANCE ===
+    tasks.push(placeModel('block-snow-large-tall.glb', -30, 0, -55, 2).then(m => {
+        if (m) { buildings.mineEntrance = m; }
+    }));
+    tasks.push(placeModel('door-rotate-large.glb', -30, 0, -53.5, 2).then(m => {
+        if (m) {
+            m.userData = { name: 'mineDoor', type: 'door', isOpen: false };
+            buildings.mineDoor = m;
+            interactables.push(m);
+        }
+    }));
+    // Mine frame
+    tasks.push(placeModel('ladder.glb', -31, 0, -54, 2));
+    tasks.push(placeModel('ladder.glb', -29, 0, -54, 2));
+
+    // === STAGE 2 TRACES ===
+    await buildStage2Traces();
+
+    // === MINE INTERIOR ===
+    buildMineInterior();
+
+    await Promise.allSettled(tasks);
+}
+
+async function buildStage2Traces() {
+    const traces = [
+        { pos: [-15, 0, -30], type: 'footprint', text: '검은 발자국이 있다. 누군가 최근에 이곳을 지나간 것 같다.', model: 'stones.glb' },
+        { pos: [-20, 0, -35], type: 'branch', text: '부서진 나뭇가지가 있다. 무언가 큰 것이 지나간 흔적이다.', model: 'fence-broken.glb' },
+        { pos: [-22, 0, -40], type: 'stone', text: '이상한 돌이 있다. 표면에 알 수 없는 문양이 새겨져 있다.', model: 'rocks.glb' },
+        { pos: [-25, 0, -45], type: 'cloth', text: '오래된 천 조각이 있다. 누군가의 옷에서 찢어진 것 같다.', model: 'flag.glb' },
+        { pos: [-28, 0, -50], type: 'gear', text: '떨어진 낡은 장비가 있다. 광부의 것으로 보인다.', model: 'crate.glb' }
+    ];
+    for (const t of traces) {
+        const m = await placeModel(t.model, t.pos[0], t.pos[1], t.pos[2], 1.2);
+        if (m) {
+            m.userData = { name: 'trace_' + t.type, type: 'trace', text: t.text, investigated: false };
+            interactables.push(m);
+        }
+    }
+}
+
+function buildMineInterior() {
+    const mineY = -10;
+
+    // Mine tunnels
+    const tunnelMat = new THREE.MeshLambertMaterial({ color: 0x3a3a2a, side: THREE.BackSide });
+    const mainTunnel = new THREE.Mesh(new THREE.BoxGeometry(4, 4, 30), tunnelMat);
+    mainTunnel.position.set(-30, mineY + 2, -70); scene.add(mainTunnel);
+    const mineFloor = createBox(4, 0.2, 30, 0x4a4a3a, -30, mineY, -70);
+
+    const leftPath = new THREE.Mesh(new THREE.BoxGeometry(15, 4, 4), tunnelMat.clone());
+    leftPath.position.set(-38, mineY + 2, -85); scene.add(leftPath);
+    createBox(15, 0.2, 4, 0x4a4a3a, -38, mineY, -85);
+
+    const rightPath = new THREE.Mesh(new THREE.BoxGeometry(15, 4, 4), tunnelMat.clone());
+    rightPath.position.set(-22, mineY + 2, -85); scene.add(rightPath);
+    createBox(15, 0.2, 4, 0x4a4a3a, -22, mineY, -85);
+
+    // Crate with document
+    const crate = createBox(1.2, 1, 1.2, 0x5C4033, -30, mineY + 0.5, -83);
+    crate.userData = { name: 'mineCrate', type: 'crate', searched: false };
+    interactables.push(crate);
+    mineObjects.crate = crate;
+
+    // Mine cart
+    createBox(1.5, 0.8, 2, 0x666655, -28, mineY + 0.4, -82);
+
+    // Collapse rocks
+    const collapseRocks = createBox(4, 4, 3, 0x555544, -30, mineY + 2, -75);
+    collapseRocks.visible = false;
+    mineObjects.collapseRocks = collapseRocks;
+
+    // Sealed door
+    const sealedDoor = createBox(3, 3.5, 0.5, 0x2a2a3a, -15, mineY + 1.75, -85);
+    sealedDoor.userData = { name: 'sealedDoor', type: 'sealedDoor', isOpen: false };
+    interactables.push(sealedDoor);
+    mineObjects.sealedDoor = sealedDoor;
+
+    // Door symbol
+    const symbol = new THREE.Mesh(
+        new THREE.RingGeometry(0.3, 0.5, 6),
+        new THREE.MeshLambertMaterial({ color: 0x7722aa, emissive: 0x330066 })
+    );
+    symbol.position.set(-15, mineY + 2, -84.7); scene.add(symbol);
+
+    // Activation stones
+    const stonePositions = [[-17, mineY + 0.3, -83], [-13, mineY + 0.3, -83], [-15, mineY + 0.3, -87]];
+    stonePositions.forEach((pos, i) => {
+        const stone = new THREE.Mesh(
+            new THREE.OctahedronGeometry(0.4),
+            new THREE.MeshLambertMaterial({ color: 0x555577 })
+        );
+        stone.position.set(pos[0], pos[1], pos[2]);
+        stone.userData = { name: 'activationStone_' + i, type: 'activationStone', activated: false, index: i };
+        stone.castShadow = true;
+        scene.add(stone);
+        interactables.push(stone);
+    });
+
+    // Boss room
+    const bossRoom = new THREE.Mesh(new THREE.BoxGeometry(12, 6, 12), new THREE.MeshLambertMaterial({ color: 0x2a1a2a, side: THREE.BackSide }));
+    bossRoom.position.set(-15, mineY + 3, -95); scene.add(bossRoom);
+    createBox(12, 0.2, 12, 0x3a2a3a, -15, mineY, -95);
+
+    // Mystery light (hidden)
+    const lightSpot = new THREE.Mesh(
+        new THREE.SphereGeometry(0.5, 16, 16),
+        new THREE.MeshBasicMaterial({ color: 0x9933ff, transparent: true, opacity: 0.8 })
+    );
+    lightSpot.position.set(-15, mineY + 1, -95);
+    lightSpot.visible = false;
+    lightSpot.userData = { name: 'mysteryLight', type: 'mysteryLight' };
+    scene.add(lightSpot);
+    interactables.push(lightSpot);
+    mineObjects.lightSpot = lightSpot;
+
+    const mineLight = new THREE.PointLight(0xffaa44, 0.5, 20);
+    mineLight.position.set(-30, mineY + 3, -70);
+    scene.add(mineLight);
+}
+
+// ==================== CONTROLS ====================
+function setupControls() {
+    document.addEventListener('keydown', (e) => {
+        keys[e.code] = true;
+        if (e.code === 'KeyF') handleInteraction();
+        if (e.code === 'KeyI') toggleInventory();
+        if (e.code === 'KeyP') toggleShop();
+        if (e.code === 'KeyR' && !gameState.inCombat) toggleRoulette();
+    });
+    document.addEventListener('keyup', (e) => { keys[e.code] = false; });
+
+    const canvas = document.getElementById('game-canvas');
+    canvas.addEventListener('click', () => {
+        if (!isPointerLocked && !isMobile) canvas.requestPointerLock();
+        if (gameState.inCombat && gameState.equippedWeapon) attackEnemy();
+    });
+    document.addEventListener('pointerlockchange', () => {
+        isPointerLocked = document.pointerLockElement === canvas;
+    });
+    document.addEventListener('mousemove', (e) => {
+        if (!isPointerLocked) return;
+        yaw -= e.movementX * 0.002;
+        pitch -= e.movementY * 0.002;
+        pitch = Math.max(-Math.PI / 2.2, Math.min(Math.PI / 2.2, pitch));
+    });
+
+    // Joystick
+    const base = document.getElementById('joystick-base');
+    const thumb = document.getElementById('joystick-thumb');
+    base.addEventListener('touchstart', (e) => { e.preventDefault(); joystickActive = true; });
+    base.addEventListener('touchmove', (e) => {
+        e.preventDefault();
+        if (!joystickActive) return;
+        const t = e.touches[0], r = base.getBoundingClientRect();
+        const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+        let dx = t.clientX - cx, dy = t.clientY - cy;
+        const dist = Math.sqrt(dx * dx + dy * dy), max = 40;
+        if (dist > max) { dx = dx / dist * max; dy = dy / dist * max; }
+        thumb.style.transform = `translate(${dx}px, ${dy}px)`;
+        joystickDir = { x: dx / max, y: dy / max };
+    });
+    base.addEventListener('touchend', () => {
+        joystickActive = false;
+        thumb.style.transform = 'translate(0,0)';
+        joystickDir = { x: 0, y: 0 };
+    });
+
+    // Mobile camera
+    let lastTouch = null;
+    canvas.addEventListener('touchstart', (e) => {
+        if (e.touches.length === 1 && e.touches[0].clientX > window.innerWidth / 3)
+            lastTouch = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+    });
+    canvas.addEventListener('touchmove', (e) => {
+        if (lastTouch && e.touches.length === 1) {
+            const t = e.touches[0];
+            yaw -= (t.clientX - lastTouch.x) * 0.005;
+            pitch -= (t.clientY - lastTouch.y) * 0.005;
+            pitch = Math.max(-Math.PI / 2.2, Math.min(Math.PI / 2.2, pitch));
+            lastTouch = { x: t.clientX, y: t.clientY };
+        }
+    });
+    canvas.addEventListener('touchend', () => { lastTouch = null; });
+
+    document.getElementById('mobile-attack-btn').addEventListener('touchstart', (e) => {
+        e.preventDefault();
+        if (gameState.inCombat && gameState.equippedWeapon) attackEnemy();
+    });
+    document.getElementById('mobile-interact-btn').addEventListener('touchstart', (e) => {
+        e.preventDefault(); handleInteraction();
+    });
+}
+
+function detectMobile() {
+    isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent)
+        || ('ontouchstart' in window) || (window.innerWidth <= 800);
+    if (isMobile) {
+        document.getElementById('mobile-joystick').style.display = 'block';
+        document.getElementById('mobile-interact-btn').style.display = 'flex';
+        document.getElementById('crosshair').style.display = 'none';
+    }
+}
+
+// ==================== GAME LOOP ====================
+function gameLoop() {
+    requestAnimationFrame(gameLoop);
+    const delta = Math.min(clock.getDelta(), 0.05);
+    updatePlayer(delta);
+    updateNPCs(delta);
+    updateEnemies(delta);
+    updateInteractions();
+    updateArrow();
+    updateMineEffects();
+    checkSnakeArea();
+    renderer.render(scene, camera);
+}
+
+function updatePlayer(delta) {
+    camera.quaternion.setFromEuler(new THREE.Euler(pitch, yaw, 0, 'YXZ'));
+
+    const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(new THREE.Quaternion().setFromEuler(new THREE.Euler(0, yaw, 0)));
+    const right = new THREE.Vector3(1, 0, 0).applyQuaternion(new THREE.Quaternion().setFromEuler(new THREE.Euler(0, yaw, 0)));
+    const moveDir = new THREE.Vector3();
+
+    if (isMobile && joystickActive) {
+        moveDir.add(forward.clone().multiplyScalar(-joystickDir.y));
+        moveDir.add(right.clone().multiplyScalar(joystickDir.x));
+    } else {
+        if (keys['KeyW'] || keys['ArrowUp']) moveDir.add(forward);
+        if (keys['KeyS'] || keys['ArrowDown']) moveDir.sub(forward);
+        if (keys['KeyA'] || keys['ArrowLeft']) moveDir.sub(right);
+        if (keys['KeyD'] || keys['ArrowRight']) moveDir.add(right);
+    }
+
+    if (moveDir.length() > 0) {
+        moveDir.normalize();
+        playerBody.position.x += moveDir.x * PLAYER_SPEED * delta;
+        playerBody.position.z += moveDir.z * PLAYER_SPEED * delta;
+
+        if (gameState.stage === 1 && !gameState.hasMovedStage1 && !gameState.completedQuests.includes('chief_talked')) {
+            gameState.hasMovedStage1 = true;
+            showQuest('마을 이장에게 가기');
+            setArrowTarget(new THREE.Vector3(30, 2, 0));
+        }
+        if (gameState.stage === 2 && !gameState.hasMovedStage2 && gameState.stage2Phase === 0) {
+            gameState.hasMovedStage2 = true;
+            showQuest('수상한 소문을 조사하기');
+        }
+    }
+
+    playerBody.position.y = gameState.insideMine ? -10 + PLAYER_HEIGHT : PLAYER_HEIGHT;
+    playerBody.position.x = Math.max(-140, Math.min(140, playerBody.position.x));
+    playerBody.position.z = Math.max(-140, Math.min(140, playerBody.position.z));
+
+    checkCollisions();
+    if (gameState.stage === 2 && gameState.stage2Phase >= 1) checkTraceProximity();
+}
+
+function checkCollisions() {
+    const px = playerBody.position.x, pz = playerBody.position.z;
+    const castle = { x: 30, z: 0, hw: 7, hd: 6 };
+    const door = buildings.castleDoor;
+    if (door && !door.userData.isOpen) {
+        if (px > castle.x - castle.hw && px < castle.x + castle.hw &&
+            pz > castle.z - castle.hd && pz < castle.z + castle.hd) {
+            const dx = px - castle.x, dz = pz - castle.z;
+            if (Math.abs(dx) / castle.hw > Math.abs(dz) / castle.hd)
+                playerBody.position.x = castle.x + (dx > 0 ? castle.hw : -castle.hw);
+            else
+                playerBody.position.z = castle.z + (dz > 0 ? castle.hd : -castle.hd);
+        }
+    }
+    if (!gameState.insideMine && buildings.mineDoor) {
+        if (!buildings.mineDoor.userData.isOpen) {
+            if (Math.abs(px - (-30)) < 2 && Math.abs(pz - (-55)) < 1)
+                playerBody.position.z = -54;
+        } else if (Math.abs(px - (-30)) < 1.5 && Math.abs(pz - (-56)) < 1) {
+            enterMine();
+        }
+    }
+    if (gameState.insideMine && gameState.mineCollapsed && mineObjects.collapseRocks && mineObjects.collapseRocks.visible) {
+        const rp = mineObjects.collapseRocks.position;
+        if (Math.abs(px - rp.x) < 2 && Math.abs(pz - rp.z) < 1.5)
+            playerBody.position.z = rp.z + 1.5;
+    }
+}
+
+function checkTraceProximity() {
+    interactables.forEach(obj => {
+        if (obj.userData.type === 'trace' && !obj.userData.investigated) {
+            if (playerBody.position.distanceTo(obj.position) < 3) {
+                obj.userData.investigated = true;
+                gameState.mineTracesFound++;
+                showInvestigationText(obj.userData.text);
+            }
+        }
+    });
+}
+
+// ==================== NPC ====================
+function updateNPCs(delta) {
+    npcs.forEach(npc => {
+        npc.position.y = Math.sin(Date.now() * 0.002) * 0.05;
+    });
+}
+
+// ==================== ENEMY SYSTEM ====================
+function spawnSnake(x, y, z) {
+    const group = new THREE.Group();
+
+    const texLoader = new THREE.TextureLoader();
+    let spriteLoaded = false;
+    try {
+        const tex = texLoader.load('assets/textures/snake.png',
+            () => { spriteLoaded = true; },
+            undefined,
+            () => { if (!spriteLoaded) buildGeometrySnake(group); }
+        );
+        tex.encoding = THREE.sRGBEncoding;
+        const spriteMat = new THREE.SpriteMaterial({ map: tex, transparent: true });
+        const sprite = new THREE.Sprite(spriteMat);
+        sprite.scale.set(4, 2, 1);
+        sprite.position.set(0, 1, 0);
+        sprite.userData.isSprite = true;
+        group.add(sprite);
+    } catch (e) {
+        buildGeometrySnake(group);
+    }
+
+    group.position.set(x, y, z);
+    group.userData = { name: '독사', type: 'enemy', hp: 50, maxHp: 50, damage: [1, 5], attackCooldown: 0, attackInterval: 2 };
+    scene.add(group);
+    enemies.push(group);
+    return group;
+}
+
+function buildGeometrySnake(group) {
+    if (group.children.length > 0) return;
+    const green = new THREE.MeshLambertMaterial({ color: 0x228B22 });
+    const darkGreen = new THREE.MeshLambertMaterial({ color: 0x006400 });
+    const brown = new THREE.MeshLambertMaterial({ color: 0x8B5E3C });
+
+    // Body segments - coiled shape
+    for (let i = 0; i < 8; i++) {
+        const r = 0.22 - i * 0.02;
+        const seg = new THREE.Mesh(new THREE.SphereGeometry(r, 8, 6), i % 2 === 0 ? green : darkGreen);
+        const angle = i * 0.6;
+        seg.position.set(Math.sin(angle) * 0.5, r, i * 0.25 - 0.5);
+        seg.scale.set(1, 0.7, 1.2);
+        seg.castShadow = true;
+        group.add(seg);
+    }
+    // Belly (brown underside)
+    const belly = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.08, 1.8), brown);
+    belly.position.set(0, 0.05, 0.3);
+    group.add(belly);
+
+    // Head - triangular
+    const head = new THREE.Mesh(new THREE.ConeGeometry(0.25, 0.5, 4), darkGreen);
+    head.rotation.x = -Math.PI / 2;
+    head.position.set(0, 0.35, -0.7);
+    head.castShadow = true;
+    group.add(head);
+
+    // Eyes - dark with red pupil
+    for (const sx of [0.12, -0.12]) {
+        const eyeWhite = new THREE.Mesh(new THREE.SphereGeometry(0.06, 6, 6), new THREE.MeshBasicMaterial({ color: 0x332200 }));
+        eyeWhite.position.set(sx, 0.42, -0.8);
+        group.add(eyeWhite);
+        const pupil = new THREE.Mesh(new THREE.SphereGeometry(0.03, 6, 6), new THREE.MeshBasicMaterial({ color: 0xcc0000 }));
+        pupil.position.set(sx, 0.43, -0.85);
+        group.add(pupil);
+    }
+
+    // Tongue
+    const tongue = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.02, 0.3), new THREE.MeshBasicMaterial({ color: 0xcc0000 }));
+    tongue.position.set(0, 0.32, -1.0);
+    group.add(tongue);
+    // Tongue fork
+    for (const sx of [0.03, -0.03]) {
+        const fork = new THREE.Mesh(new THREE.BoxGeometry(0.015, 0.015, 0.1), new THREE.MeshBasicMaterial({ color: 0xcc0000 }));
+        fork.position.set(sx, 0.32, -1.18);
+        fork.rotation.y = sx > 0 ? 0.3 : -0.3;
+        group.add(fork);
+    }
+
+    // Tail - thin and tapered
+    const tail = new THREE.Mesh(new THREE.ConeGeometry(0.08, 0.6, 6), green);
+    tail.rotation.x = Math.PI / 2;
+    tail.position.set(0, 0.12, 1.6);
+    group.add(tail);
+}
+
+function spawnShadowBoss(x, y, z) {
+    const group = new THREE.Group();
+    const body = new THREE.Mesh(new THREE.BoxGeometry(2, 3, 1.5), new THREE.MeshLambertMaterial({ color: 0x1a0a2e, emissive: 0x110022 }));
+    body.position.y = 1.5; body.castShadow = true; group.add(body);
+    const head = new THREE.Mesh(new THREE.SphereGeometry(0.8, 12, 12), new THREE.MeshLambertMaterial({ color: 0x220044, emissive: 0x110022 }));
+    head.position.y = 3.3; head.castShadow = true; group.add(head);
+    const eyeMat = new THREE.MeshBasicMaterial({ color: 0xff00ff });
+    for (const sx of [-0.3, 0.3]) {
+        const eye = new THREE.Mesh(new THREE.SphereGeometry(0.15, 8, 8), eyeMat);
+        eye.position.set(sx, 3.4, -0.6); group.add(eye);
+    }
+    for (const side of [-1, 1]) {
+        const claw = new THREE.Mesh(new THREE.ConeGeometry(0.2, 1, 6), new THREE.MeshLambertMaterial({ color: 0x330044 }));
+        claw.position.set(side * 1.3, 2, -0.5); claw.rotation.z = side * 0.3; group.add(claw);
+    }
+    group.position.set(x, y, z);
+    group.userData = {
+        name: '폐광의 그림자', type: 'enemy', hp: 150, maxHp: 150,
+        damage: [2, 6], attackCooldown: 0, attackInterval: 2.5,
+        phase: 1, specialCooldown: 0, teleportCooldown: 0, roarCooldown: 0
+    };
+    scene.add(group); enemies.push(group);
+    return group;
+}
+
+function updateEnemies(delta) {
+    enemies.forEach(enemy => {
+        if (!enemy.userData || enemy.userData.hp <= 0) return;
+        const dist = playerBody.position.distanceTo(enemy.position);
+        const data = enemy.userData;
+        const dir = new THREE.Vector3().subVectors(playerBody.position, enemy.position);
+        dir.y = 0;
+        if (dir.length() > 0.1) enemy.rotation.y = Math.atan2(dir.x, dir.z);
+
+        if (data.name === '독사') {
+            data.attackCooldown -= delta;
+            enemy.children.forEach((c, i) => { if (i < 5) c.position.x = Math.sin(Date.now() * 0.003 + i * 0.8) * 0.15; });
+            if (dist < 15 && dist > 3) enemy.position.add(dir.normalize().multiplyScalar(3 * delta));
+            if (data.attackCooldown <= 0 && dist < 8) {
+                damagePlayer(randomInt(data.damage[0], data.damage[1]));
+                spawnProjectile(enemy.position.clone(), 0x00ff00);
+                data.attackCooldown = data.attackInterval;
+            }
+        } else if (data.name === '폐광의 그림자') {
+            data.attackCooldown -= delta;
+            data.specialCooldown -= delta;
+            data.teleportCooldown -= delta;
+            enemy.position.y = (gameState.insideMine ? -10 : 0) + Math.sin(Date.now() * 0.002) * 0.3;
+
+            if (dist > 4) {
+                const mv = dir.normalize().multiplyScalar(4 * delta);
+                enemy.position.x += mv.x; enemy.position.z += mv.z;
+            }
+            if (data.hp <= data.maxHp / 2 && data.phase === 1) {
+                data.phase = 2; data.attackInterval = 2;
+                showInvestigationText('폐광의 그림자가 더 강해졌다!');
+            }
+            if (data.attackCooldown <= 0) {
+                if (dist < 5) {
+                    damagePlayer(randomInt(2, 6));
+                    showInvestigationText('검은 발톱 공격!');
+                    data.attackCooldown = data.attackInterval;
+                } else if (dist < 15 && data.specialCooldown <= 0) {
+                    damagePlayer(randomInt(3, 8));
+                    spawnProjectile(enemy.position.clone(), 0x6600cc);
+                    showInvestigationText('어둠의 구체!');
+                    data.specialCooldown = 4;
+                    data.attackCooldown = data.attackInterval;
+                }
+            }
+            if (data.teleportCooldown <= 0 && dist < 12) {
+                data.teleportCooldown = 8;
+                const behind = new THREE.Vector3(0, 0, 3).applyQuaternion(new THREE.Quaternion().setFromEuler(new THREE.Euler(0, yaw, 0)));
+                enemy.position.x = playerBody.position.x + behind.x;
+                enemy.position.z = playerBody.position.z + behind.z;
+                showInvestigationText('그림자 이동!');
+            }
+            if (data.phase === 2) {
+                if (data.roarCooldown === undefined) data.roarCooldown = 12;
+                data.roarCooldown -= delta;
+                if (data.roarCooldown <= 0) {
+                    data.roarCooldown = 12;
+                    damagePlayer(randomInt(5, 10));
+                    shakeScreen();
+                    showInvestigationText('어둠의 포효!');
+                }
+            }
+        }
+    });
+}
+
+function spawnProjectile(from, color) {
+    const proj = new THREE.Mesh(
+        new THREE.SphereGeometry(0.2, 8, 8),
+        new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.7 })
+    );
+    proj.position.copy(from); proj.position.y += 0.5;
+    scene.add(proj);
+    setTimeout(() => scene.remove(proj), 1000);
+}
+
+function attackEnemy() {
+    if (!gameState.equippedWeapon || !gameState.inCombat) return;
+    const enemy = enemies.find(e => e.userData.hp > 0);
+    if (!enemy) return;
+    if (playerBody.position.distanceTo(enemy.position) > 5) {
+        showInvestigationText('너무 멀다!'); return;
+    }
+    const dmg = randomInt(gameState.equippedWeapon.minDmg, gameState.equippedWeapon.maxDmg);
+    enemy.userData.hp -= dmg;
+    showDamageNumber(dmg, enemy.position);
+    enemy.children.forEach(c => {
+        if (c.material) {
+            const orig = c.material.color.getHex();
+            c.material.color.setHex(0xffffff);
+            setTimeout(() => c.material.color.setHex(orig), 100);
+        }
+    });
+    updateEnemyHP(enemy);
+    if (enemy.userData.hp <= 0) onEnemyDeath(enemy);
+}
+
+function onEnemyDeath(enemy) {
+    scene.remove(enemy);
+    enemies = enemies.filter(e => e !== enemy);
+    document.getElementById('enemy-hp-container').style.display = 'none';
+    gameState.inCombat = false;
+    if (isMobile) document.getElementById('mobile-attack-btn').style.display = 'none';
+
+    if (enemy.userData.name === '독사') {
+        showQuest('퀘스트 완료: 독사 죽이기');
+        setTimeout(() => {
+            showQuest('마을 이장에게 가기');
+            setArrowTarget(new THREE.Vector3(30, 2, 0));
+            gameState.quest = 'return_chief';
+        }, 2000);
+    } else if (enemy.userData.name === '폐광의 그림자') {
+        showQuest('퀘스트 완료: 폐광의 그림자를 처치하기');
+        if (mineObjects.lightSpot) {
+            mineObjects.lightSpot.visible = true;
+            mineObjects.lightSpot.position.copy(enemy.position);
+            mineObjects.lightSpot.position.y = (gameState.insideMine ? -10 : 0) + 1;
+        }
+        setTimeout(() => { showQuest('이상한 빛의 정체 확인하기'); gameState.quest = 'check_light'; }, 2000);
+    }
+}
+
+function updateEnemyHP(enemy) {
+    document.getElementById('enemy-hp-container').style.display = 'block';
+    document.getElementById('enemy-name').textContent = enemy.userData.name;
+    const pct = Math.max(0, enemy.userData.hp / enemy.userData.maxHp * 100);
+    document.getElementById('enemy-hp-bar').style.width = pct + '%';
+    document.getElementById('enemy-hp-text').textContent = `HP: ${Math.max(0, enemy.userData.hp)} / ${enemy.userData.maxHp}`;
+}
+
+// ==================== INTERACTIONS ====================
+function updateInteractions() {
+    let found = false;
+    const playerPos = playerBody.position;
+    const lookDir = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+
+    npcs.forEach(npc => {
+        const dist = playerPos.distanceTo(npc.position);
+        if (dist < 4) {
+            const toNpc = new THREE.Vector3().subVectors(npc.position, playerPos).normalize();
+            if (lookDir.dot(toNpc) > 0.5) {
+                found = true; gameState.canInteract = true; gameState.interactTarget = npc;
+            }
+        }
+    });
+
+    interactables.forEach(obj => {
+        if (!obj.visible) return;
+        const dist = playerPos.distanceTo(obj.position);
+        if (dist < 4) {
+            const toObj = new THREE.Vector3().subVectors(obj.position, playerPos).normalize();
+            if (lookDir.dot(toObj) > 0.3 || dist < 2) {
+                found = true; gameState.canInteract = true; gameState.interactTarget = obj;
+            }
+        }
+    });
+
+    enemies.forEach(enemy => {
+        if (enemy.userData.hp <= 0) return;
+        const dist = playerPos.distanceTo(enemy.position);
+        const toEnemy = new THREE.Vector3().subVectors(enemy.position, playerPos).normalize();
+        if (dist < 15 && lookDir.dot(toEnemy) > 0.3 && !gameState.inCombat) startCombat(enemy);
+    });
+
+    document.getElementById('interact-prompt').style.display = (found && !gameState.inDialogue) ? 'block' : 'none';
+}
+
+function handleInteraction() {
+    if (gameState.inDialogue) { advanceDialogue(); return; }
+    if (!gameState.canInteract || !gameState.interactTarget) return;
+    const data = gameState.interactTarget.userData;
+
+    if (data.type === 'npc') handleNPCInteraction(gameState.interactTarget);
+    else if (data.type === 'door') handleDoorInteraction(gameState.interactTarget);
+    else if (data.type === 'crate') handleCrateInteraction(gameState.interactTarget);
+    else if (data.type === 'activationStone') handleStoneInteraction(gameState.interactTarget);
+    else if (data.type === 'sealedDoor') handleSealedDoorInteraction();
+    else if (data.type === 'mysteryLight') handleMysteryLightInteraction(gameState.interactTarget);
+    else if (data.type === 'trace' && !data.investigated) {
+        data.investigated = true; gameState.mineTracesFound++;
+        showInvestigationText(data.text);
+    }
+}
+
+// ==================== NPC DIALOGUES ====================
+function handleNPCInteraction(npc) {
+    if (npc.userData.name === '마을 이장') handleChiefDialogue();
+    else if (npc.userData.name === '마을 주민') handleVillagerDialogue();
+}
+
+function handleChiefDialogue() {
+    if (gameState.quest === 'return_chief') {
+        startDialogue('마을 이장', ['고맙구나. 너는 무시무시한 독사를 죽여 줘서 고맙다.'], () => {
+            addCoins(50);
+            const freshSword = { name: '신선한 칼', icon: '🗡️', type: 'weapon', minDmg: 2, maxDmg: 6, desc: '신선한 칼. 대미지: 2~6' };
+            addToInventory(freshSword);
+            gameState.equippedWeapon = freshSword;
+            showItemNotification('50 코인과 신선한 칼을 받았습니다!');
+            gameState.completedQuests.push('stage1_complete');
+            gameState.quest = null; clearArrow();
+            setTimeout(() => {
+                showStageComplete('1 STAGE CLEAR!', 3000);
+                setTimeout(() => startStage2(), 4000);
+            }, 2000);
+        });
+    } else if (!gameState.completedQuests.includes('chief_talked')) {
+        startDialogue('마을 이장', [
+            '여기는 미스테리 마을이다.',
+            '너가 마을에서 태어난 것을 축하한다.',
+            '저기 산에 있는 독사를 죽이고 다시 오렴.'
+        ], () => {
+            gameState.completedQuests.push('chief_talked');
+            addCoins(20);
+            const rustySword = { name: '녹슨 칼', icon: '🔪', type: 'weapon', minDmg: 1, maxDmg: 7, desc: '녹슨 칼. 대미지: 1~7' };
+            addToInventory(rustySword);
+            gameState.equippedWeapon = rustySword;
+            showItemNotification('녹슨 칼과 20코인을 받았습니다!');
+            showQuest('뒷산으로 가기');
+            setArrowTarget(new THREE.Vector3(0, 1, -45));
+            gameState.quest = 'go_mountain';
+        });
+    }
+}
+
+function handleVillagerDialogue() {
+    if (gameState.stage === 2 && gameState.stage2Phase === 0) {
+        startDialogue('마을 주민', [
+            '요즘 밤마다 산에서 이상한 빛이 보인단다.',
+            '특히 오래된 폐광 근처에서 이상한 소리가 들린다고 하더구나.',
+            '조심해서 조사해 보거라.'
+        ], () => {
+            gameState.stage2Phase = 1;
+            showQuest('폐광으로 가기');
+            setArrowTarget(new THREE.Vector3(-30, 2, -55));
+        });
+    } else if (gameState.quest === 'return_village') {
+        startDialogue('마을 주민', [
+            '뭐라고? 폐광에서 그걸 발견했다고?',
+            '그렇다면 네가 찾은 것은 오래전부터 전해 내려오는 미스터리의 조각일 거야.',
+            '아직 모든 미스터리가 밝혀진 것은 아니란다.'
+        ], () => {
+            gameState.completedQuests.push('stage2_complete');
+            gameState.quest = null; clearArrow();
+            addCoins(100); addDiamonds(5);
+            showItemNotification('2스테이지 완료! 코인 +100, 다이아몬드 +5');
+            setTimeout(() => { showStageComplete('2 STAGE CLEAR!', 4000); gameState.stage = 3; saveGameData(); }, 2000);
+        });
+    } else {
+        startDialogue('마을 주민', ['좋은 하루 되거라.'], null);
+    }
+}
+
+// ==================== DIALOGUE ====================
+function startDialogue(speaker, lines, callback) {
+    gameState.inDialogue = true;
+    gameState.dialogueQueue = [...lines];
+    gameState.dialogueCallback = callback;
+    document.getElementById('dialogue-box').style.display = 'block';
+    document.getElementById('dialogue-speaker').textContent = speaker;
+    document.getElementById('dialogue-text').textContent = gameState.dialogueQueue.shift();
+    document.getElementById('interact-prompt').style.display = 'none';
+    document.getElementById('dialogue-prompt').textContent =
+        gameState.dialogueQueue.length === 0 && !callback ? 'F키를 눌러 닫기' : 'F키를 누르시오.';
+}
+
+function advanceDialogue() {
+    if (gameState.dialogueQueue.length > 0) {
+        document.getElementById('dialogue-text').textContent = gameState.dialogueQueue.shift();
+        if (gameState.dialogueQueue.length === 0 && !gameState.dialogueCallback)
+            document.getElementById('dialogue-prompt').textContent = 'F키를 눌러 닫기';
+    } else {
+        document.getElementById('dialogue-box').style.display = 'none';
+        gameState.inDialogue = false;
+        if (gameState.dialogueCallback) { gameState.dialogueCallback(); gameState.dialogueCallback = null; }
+    }
+}
+
+// ==================== DOORS ====================
+function handleDoorInteraction(door) {
+    if (door.userData.name === 'castleDoor') {
+        door.userData.isOpen = true;
+        door.visible = false;
+        showInvestigationText('성문이 열렸습니다.');
+    } else if (door.userData.name === 'mineDoor') {
+        if (gameState.stage2Phase >= 1) {
+            door.userData.isOpen = true;
+            door.visible = false;
+            showInvestigationText('철문이 천천히 열렸습니다.');
+        } else {
+            showInvestigationText('아직 갈 이유가 없다.');
+        }
+    }
+}
+
+// ==================== MINE ====================
+function enterMine() {
+    if (gameState.insideMine) return;
+    gameState.insideMine = true;
+    playerBody.position.set(-30, -10 + PLAYER_HEIGHT, -60);
+    scene.background = new THREE.Color(0x111111);
+    scene.fog = new THREE.Fog(0x111111, 5, 30);
+    const flashlight = new THREE.SpotLight(0xffffcc, 1.5, 25, Math.PI / 5, 0.5);
+    flashlight.position.set(0, 0, 0);
+    flashlight.target.position.set(0, 0, -1);
+    camera.add(flashlight); camera.add(flashlight.target);
+    showQuest('폐광 조사하기');
+    startMineSounds();
+}
+
+function exitMine() {
+    gameState.insideMine = false;
+    playerBody.position.set(-30, PLAYER_HEIGHT, -52);
+    scene.background = new THREE.Color(0x87CEEB);
+    scene.fog = new THREE.Fog(0x87CEEB, 60, 250);
+    camera.children.forEach(child => { if (child.isSpotLight) camera.remove(child); });
+}
+
+function startMineSounds() {
+    const sounds = ['...발자국 소리가 들린다...', '...금속이 떨어지는 소리...', '...멀리서 울음소리가 들린다...', '...갑자기 큰 소리가 들렸다!...'];
+    const play = () => {
+        if (!gameState.insideMine) return;
+        showInvestigationText(sounds[Math.floor(Math.random() * sounds.length)]);
+        setTimeout(play, 5000 + Math.random() * 10000);
+    };
+    setTimeout(play, 3000);
+}
+
+function updateMineEffects() {
+    if (mineObjects.lightSpot && mineObjects.lightSpot.visible) {
+        const s = 1 + Math.sin(Date.now() * 0.003) * 0.3;
+        mineObjects.lightSpot.scale.set(s, s, s);
+        mineObjects.lightSpot.material.opacity = 0.5 + Math.sin(Date.now() * 0.005) * 0.3;
+    }
+}
+
+// ==================== MINE INTERACTIONS ====================
+function handleCrateInteraction(crate) {
+    if (crate.userData.searched) return;
+    crate.userData.searched = true;
+    const doc = { name: '이상한 문서', icon: '📜', type: 'document', desc: '오래된 문서. 읽어보자.',
+        content: '산 깊은 곳에 있는 문을 열지 마라. 그 안에는 잠들어 있는 것이 있다.' };
+    addToInventory(doc);
+    showItemNotification('이상한 문서를 발견했습니다!');
+    showQuest('이상한 문서 읽기');
+    gameState.quest = 'read_document';
+    setTimeout(() => showDocument(doc), 1000);
+}
+
+function handleStoneInteraction(stone) {
+    if (stone.userData.activated) return;
+    stone.userData.activated = true;
+    gameState.stonesActivated++;
+    stone.material.color.setHex(0xaa44ff);
+    stone.material.emissive = new THREE.Color(0x6622aa);
+    showInvestigationText(`봉인석 활성화 (${gameState.stonesActivated}/3)`);
+    if (gameState.stonesActivated >= 3) {
+        setTimeout(() => {
+            showInvestigationText('봉인된 문이 열리고 있다!');
+            shakeScreen();
+            if (mineObjects.sealedDoor) mineObjects.sealedDoor.position.y = -15;
+            gameState.quest = 'enter_boss';
+            showQuest('폐광의 그림자를 처치하기');
+            setTimeout(() => {
+                spawnShadowBoss(-15, gameState.insideMine ? -10 : 0, -95);
+                gameState.bossRoomReached = true;
+            }, 2000);
+        }, 1000);
+    }
+}
+
+function handleSealedDoorInteraction() {
+    if (gameState.stonesActivated < 3) {
+        showInvestigationText('문 너머에서 무언가 움직이고 있다.');
+        showQuest('봉인된 문 조사하기');
+        gameState.quest = 'investigate_seal';
+    }
+}
+
+function handleMysteryLightInteraction(light) {
+    showInvestigationText('이건 단순한 빛이 아니다.');
+    addToInventory({ name: '미스터리의 조각', icon: '💎', type: 'special', desc: '이상한 보라색 빛에서 나온 미스터리의 조각.' });
+    showItemNotification('미스터리의 조각을 획득했습니다!');
+    light.visible = false;
+    setTimeout(() => {
+        showQuest('마을로 돌아가기');
+        gameState.quest = 'return_village';
+        setArrowTarget(new THREE.Vector3(-5, 0, 8));
+        exitMine();
+    }, 2000);
+}
+
+function showDocument(doc) {
+    document.getElementById('doc-title').textContent = doc.name;
+    document.getElementById('doc-content').textContent = doc.content;
+    document.getElementById('document-viewer').style.display = 'block';
+    gameState.documentRead = true;
+}
+
+function closeDocument() {
+    document.getElementById('document-viewer').style.display = 'none';
+    if (gameState.quest === 'read_document') {
+        shakeScreen();
+        showInvestigationText('갑자기 큰 소리가 났다!');
+        setTimeout(() => {
+            flickerLights();
+            showQuest('폐광에서 탈출하기');
+            gameState.quest = 'escape_mine';
+            gameState.mineCollapsed = true;
+            if (mineObjects.collapseRocks) mineObjects.collapseRocks.visible = true;
+            setArrowTarget(new THREE.Vector3(-15, -10, -85));
+        }, 1500);
+    }
+}
+
+function flickerLights() {
+    scene.background = new THREE.Color(0x000000);
+    setTimeout(() => { scene.background = new THREE.Color(0x111111); }, 300);
+    setTimeout(() => { scene.background = new THREE.Color(0x000000); }, 600);
+    setTimeout(() => { scene.background = new THREE.Color(0x111111); }, 900);
+}
+
+// ==================== COMBAT ====================
+function startCombat(enemy) {
+    gameState.inCombat = true;
+    gameState.currentEnemy = enemy;
+    updateEnemyHP(enemy);
+    if (enemy.userData.name === '독사') {
+        showQuest('독사 죽이기');
+        if (gameState.snakeDeaths > 0 && gameState.equippedWeapon && gameState.equippedWeapon.name === '녹슨 칼') {
+            gameState.equippedWeapon.minDmg = 1;
+            gameState.equippedWeapon.maxDmg = 5;
+        }
+    }
+    if (isMobile) document.getElementById('mobile-attack-btn').style.display = 'flex';
+}
+
+function damagePlayer(dmg) {
+    gameState.playerHp -= dmg;
+    showDamageNumber(dmg, playerBody.position, true);
+    updateHUD();
+    const flash = document.createElement('div');
+    flash.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(255,0,0,0.2);z-index:999;pointer-events:none;';
+    document.body.appendChild(flash);
+    setTimeout(() => flash.remove(), 200);
+    if (gameState.playerHp <= 0) playerDeath();
+}
+
+function playerDeath() {
+    gameState.playerHp = 0; updateHUD();
+    document.getElementById('death-screen').style.display = 'flex';
+    if (gameState.currentEnemy && gameState.currentEnemy.userData.name === '독사') gameState.snakeDeaths++;
+}
+
+function respawnPlayer() {
+    document.getElementById('death-screen').style.display = 'none';
+    gameState.playerHp = gameState.playerMaxHp; updateHUD();
+    if (gameState.currentEnemy) {
+        const enemy = gameState.currentEnemy;
+        if (enemy.userData.name === '독사') {
+            if (gameState.insideMine) exitMine();
+            playerBody.position.set(0, PLAYER_HEIGHT, -30);
+        } else if (enemy.userData.name === '폐광의 그림자') {
+            playerBody.position.set(-15, -10 + PLAYER_HEIGHT, -88);
+        }
+        enemy.userData.hp = enemy.userData.maxHp;
+        updateEnemyHP(enemy);
+        gameState.inCombat = false;
+        document.getElementById('enemy-hp-container').style.display = 'none';
+    } else {
+        playerBody.position.set(0, PLAYER_HEIGHT, 0);
+        if (gameState.insideMine) exitMine();
+    }
+}
+
+// ==================== STAGES ====================
+function startStage1() {
+    gameState.stage = 1;
+    playerBody.position.set(0, PLAYER_HEIGHT, 5);
+    yaw = 0; pitch = 0;
+}
+
+function startStage2() {
+    gameState.stage = 2;
+    gameState.stage2Phase = 0; gameState.hasMovedStage2 = false;
+    gameState.mineTracesFound = 0; gameState.stonesActivated = 0;
+    gameState.mineCollapsed = false; gameState.documentRead = false;
+    gameState.bossRoomReached = false;
+    showStageComplete('2스테이지 시작', 2500);
+    setTimeout(() => {
+        playerBody.position.set(-6, PLAYER_HEIGHT, 5);
+        yaw = 0; pitch = 0;
+        if (gameState.insideMine) exitMine();
+    }, 2500);
+}
+
+function showStageComplete(text, duration) {
+    const el = document.getElementById('stage-transition');
+    document.getElementById('stage-text').textContent = text;
+    el.style.display = 'flex';
+    setTimeout(() => { el.style.display = 'none'; }, duration);
+}
+
+let snakeSpawned = false;
+function checkSnakeArea() {
+    if (snakeSpawned || !playerBody) return;
+    if (playerBody.position.distanceTo(new THREE.Vector3(0, PLAYER_HEIGHT, -45)) < 15 && gameState.quest === 'go_mountain') {
+        snakeSpawned = true;
+        spawnSnake(0, 0, -45);
+    }
+}
+
+// ==================== ARROW ====================
+function setArrowTarget(target) {
+    if (arrowHelper) scene.remove(arrowHelper);
+    const arrowMesh = new THREE.Mesh(
+        new THREE.ConeGeometry(0.3, 1, 8),
+        new THREE.MeshBasicMaterial({ color: 0xfbbf24, transparent: true, opacity: 0.8 })
+    );
+    arrowMesh.userData = { target };
+    scene.add(arrowMesh);
+    arrowHelper = arrowMesh;
+}
+
+function clearArrow() {
+    if (arrowHelper) { scene.remove(arrowHelper); arrowHelper = null; }
+}
+
+function updateArrow() {
+    if (!arrowHelper) return;
+    const target = arrowHelper.userData.target;
+    const dir = new THREE.Vector3().subVectors(target, playerBody.position).normalize();
+    arrowHelper.position.copy(playerBody.position);
+    arrowHelper.position.y += 2.5 + Math.sin(Date.now() * 0.003) * 0.3;
+    arrowHelper.position.add(dir.clone().multiplyScalar(3));
+    arrowHelper.lookAt(target);
+    arrowHelper.rotateX(Math.PI / 2);
+}
+
+// ==================== INVENTORY ====================
+function addToInventory(item) {
+    if (gameState.inventory.length >= 18) { showInvestigationText('인벤토리가 가득 찼습니다!'); return false; }
+    gameState.inventory.push(item);
+    renderInventoryGrid(); saveGameData();
+    return true;
+}
+
+function renderInventoryGrid() {
+    const grid = document.getElementById('inventory-grid');
+    if (!grid) return;
+    grid.innerHTML = '';
+    for (let i = 0; i < 18; i++) {
+        const slot = document.createElement('div');
+        slot.className = 'inv-slot' + (gameState.inventory[i] ? ' has-item' : '');
+        if (gameState.inventory[i]) {
+            slot.textContent = gameState.inventory[i].icon || '?';
+            slot.onclick = () => showItemDetail(i);
+        }
+        grid.appendChild(slot);
+    }
+}
+
+function showItemDetail(index) {
+    const item = gameState.inventory[index];
+    if (!item) return;
+    document.getElementById('item-detail').style.display = 'block';
+    document.getElementById('item-detail-name').textContent = item.name;
+    document.getElementById('item-detail-desc').textContent = item.desc || '';
+    const useBtn = document.getElementById('item-use-btn');
+    if (item.type === 'weapon') {
+        useBtn.style.display = 'block'; useBtn.textContent = '장착';
+        useBtn.onclick = () => { gameState.equippedWeapon = item; showInvestigationText(item.name + ' 장착!'); };
+    } else if (item.type === 'document') {
+        useBtn.style.display = 'block'; useBtn.textContent = '읽기';
+        useBtn.onclick = () => showDocument(item);
+    } else { useBtn.style.display = 'none'; }
+}
+
+function toggleInventory() {
+    const el = document.getElementById('inventory-screen');
+    const isOpen = el.style.display !== 'none';
+    el.style.display = isOpen ? 'none' : 'block';
+    if (!isOpen) {
+        renderInventoryGrid();
+        document.getElementById('item-detail').style.display = 'none';
+        document.getElementById('shop-screen').style.display = 'none';
+        document.getElementById('roulette-screen').style.display = 'none';
+    }
+}
+
+// ==================== SHOP ====================
+const shopItems = [
+    { name: '체력 포션', icon: '🧪', type: 'potion', desc: '체력을 30 회복합니다.', price: 15, heal: 30 },
+    { name: '큰 체력 포션', icon: '🧪', type: 'potion', desc: '체력을 60 회복합니다.', price: 30, heal: 60 },
+    { name: '강화석', icon: '💠', type: 'upgrade', desc: '무기 대미지 +1', price: 50 },
+    { name: '보호의 반지', icon: '💍', type: 'accessory', desc: '받는 대미지 -1', price: 80 },
+];
+
+function renderShop() {
+    const container = document.getElementById('shop-items');
+    if (!container) return;
+    container.innerHTML = '';
+    shopItems.forEach((item, i) => {
+        const div = document.createElement('div');
+        div.className = 'shop-item';
+        div.innerHTML = `<div class="shop-item-info"><div class="shop-item-name">${item.icon} ${item.name}</div><div class="shop-item-desc">${item.desc}</div></div><button class="shop-buy-btn" onclick="buyItem(${i})">${item.price} 코인</button>`;
+        container.appendChild(div);
+    });
+}
+
+function buyItem(index) {
+    const item = shopItems[index];
+    if (gameState.coins < item.price) { showInvestigationText('코인이 부족합니다!'); return; }
+    if (item.type === 'potion') {
+        gameState.coins -= item.price;
+        gameState.playerHp = Math.min(gameState.playerMaxHp, gameState.playerHp + item.heal);
+        updateHUD();
+        showItemNotification(item.name + '을 사용했습니다!');
+    } else {
+        gameState.coins -= item.price;
+        if (!addToInventory({ ...item })) { gameState.coins += item.price; return; }
+        showItemNotification(item.name + '을 구매했습니다!');
+    }
+    updateHUD(); saveGameData();
+}
+
+function toggleShop() {
+    const el = document.getElementById('shop-screen');
+    const isOpen = el.style.display !== 'none';
+    el.style.display = isOpen ? 'none' : 'block';
+    if (!isOpen) {
+        document.getElementById('inventory-screen').style.display = 'none';
+        document.getElementById('roulette-screen').style.display = 'none';
+    }
+}
+
+// ==================== ROULETTE ====================
+let rouletteAngle = 0, rouletteSpinning = false;
+const rouletteRewards = [
+    { label: '5 코인', type: 'coin', amount: 5, color: '#fbbf24' },
+    { label: '10 코인', type: 'coin', amount: 10, color: '#f59e0b' },
+    { label: '20 코인', type: 'coin', amount: 20, color: '#d97706' },
+    { label: '1 다이아', type: 'diamond', amount: 1, color: '#60a5fa' },
+    { label: '50 코인', type: 'coin', amount: 50, color: '#ea580c' },
+    { label: '꽝', type: 'nothing', amount: 0, color: '#666' },
+    { label: '3 다이아', type: 'diamond', amount: 3, color: '#3b82f6' },
+    { label: '체력 회복', type: 'heal', amount: 50, color: '#22c55e' },
+];
+
+function drawRoulette() {
+    const canvas = document.getElementById('roulette-canvas');
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d'), cx = 150, cy = 150, r = 130;
+    const segs = rouletteRewards.length, arc = (Math.PI * 2) / segs;
+    ctx.clearRect(0, 0, 300, 300);
+    for (let i = 0; i < segs; i++) {
+        const angle = rouletteAngle + i * arc;
+        ctx.beginPath(); ctx.moveTo(cx, cy); ctx.arc(cx, cy, r, angle, angle + arc);
+        ctx.fillStyle = rouletteRewards[i].color; ctx.fill();
+        ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke();
+        ctx.save(); ctx.translate(cx, cy); ctx.rotate(angle + arc / 2);
+        ctx.textAlign = 'right'; ctx.fillStyle = '#fff'; ctx.font = 'bold 11px sans-serif';
+        ctx.fillText(rouletteRewards[i].label, r - 10, 4); ctx.restore();
+    }
+    ctx.beginPath(); ctx.arc(cx, cy, 15, 0, Math.PI * 2); ctx.fillStyle = '#a855f7'; ctx.fill();
+    ctx.beginPath(); ctx.moveTo(cx + r + 5, cy); ctx.lineTo(cx + r - 15, cy - 10); ctx.lineTo(cx + r - 15, cy + 10);
+    ctx.fillStyle = '#f87171'; ctx.fill();
+}
+
+function spinRoulette() {
+    if (rouletteSpinning) return;
+    if (gameState.coins < 10) { showInvestigationText('코인이 부족합니다! (10 코인 필요)'); return; }
+    gameState.coins -= 10; updateHUD(); rouletteSpinning = true;
+    document.getElementById('roulette-spin-btn').disabled = true;
+    document.getElementById('roulette-result').textContent = '';
+    let speed = 0.3;
+    const spin = () => {
+        rouletteAngle += speed; speed *= 0.995; drawRoulette();
+        if (speed > 0.002) { requestAnimationFrame(spin); return; }
+        rouletteSpinning = false;
+        document.getElementById('roulette-spin-btn').disabled = false;
+        const segs = rouletteRewards.length, arc = (Math.PI * 2) / segs;
+        const norm = (((-rouletteAngle) % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
+        const idx = Math.floor(norm / arc) % segs;
+        const reward = rouletteRewards[idx];
+        if (reward.type === 'coin') { addCoins(reward.amount); document.getElementById('roulette-result').textContent = `${reward.amount} 코인 획득!`; }
+        else if (reward.type === 'diamond') { addDiamonds(reward.amount); document.getElementById('roulette-result').textContent = `${reward.amount} 다이아몬드 획득!`; }
+        else if (reward.type === 'heal') { gameState.playerHp = Math.min(gameState.playerMaxHp, gameState.playerHp + reward.amount); updateHUD(); document.getElementById('roulette-result').textContent = `체력 ${reward.amount} 회복!`; }
+        else { document.getElementById('roulette-result').textContent = '꽝! 다음에 다시!'; }
+        saveGameData();
+    };
+    requestAnimationFrame(spin);
+}
+
+function toggleRoulette() {
+    const el = document.getElementById('roulette-screen');
+    const isOpen = el.style.display !== 'none';
+    el.style.display = isOpen ? 'none' : 'block';
+    if (!isOpen) {
+        drawRoulette();
+        document.getElementById('inventory-screen').style.display = 'none';
+        document.getElementById('shop-screen').style.display = 'none';
+    }
+}
+
+// ==================== HUD ====================
+function updateHUD() {
+    const pct = Math.max(0, gameState.playerHp / gameState.playerMaxHp * 100);
+    document.getElementById('health-bar').style.width = pct + '%';
+    document.getElementById('health-text').textContent = `${Math.max(0, Math.floor(gameState.playerHp))} / ${gameState.playerMaxHp}`;
+    document.getElementById('health-bar').style.background =
+        pct > 50 ? 'linear-gradient(90deg, #22c55e, #4ade80)' :
+        pct > 25 ? 'linear-gradient(90deg, #f59e0b, #fbbf24)' :
+        'linear-gradient(90deg, #dc2626, #f87171)';
+    document.getElementById('coin-display').textContent = '코인: ' + gameState.coins;
+    document.getElementById('diamond-display').textContent = '다이아: ' + gameState.diamonds;
+}
+
+function showQuest(text) {
+    const el = document.getElementById('quest-display');
+    document.getElementById('quest-text').textContent = text;
+    el.style.display = 'block'; el.style.animation = 'none'; el.offsetHeight; el.style.animation = 'questAppear 0.5s ease-out';
+}
+
+function showItemNotification(text) {
+    const el = document.getElementById('item-notification');
+    document.getElementById('item-notif-text').textContent = text;
+    el.style.display = 'block'; el.style.animation = 'none'; el.offsetHeight; el.style.animation = 'notifAnim 0.5s ease-out';
+    setTimeout(() => { el.style.display = 'none'; }, 3000);
+}
+
+function showInvestigationText(text) {
+    const el = document.getElementById('investigation-text');
+    el.textContent = text; el.style.display = 'block'; el.style.animation = 'none'; el.offsetHeight; el.style.animation = 'fadeInUp 0.3s ease-out';
+    setTimeout(() => { el.style.display = 'none'; }, 3000);
+}
+
+function showDamageNumber(dmg, position) {
+    const el = document.createElement('div');
+    el.className = 'damage-num'; el.textContent = '-' + dmg;
+    el.style.left = (window.innerWidth / 2 + (Math.random() - 0.5) * 100) + 'px';
+    el.style.top = (window.innerHeight / 2 - 50 + (Math.random() - 0.5) * 50) + 'px';
+    document.getElementById('damage-numbers').appendChild(el);
+    setTimeout(() => el.remove(), 1000);
+}
+
+function shakeScreen() {
+    const c = document.getElementById('game-canvas');
+    c.style.animation = 'none'; c.offsetHeight; c.style.animation = 'shake 0.5s ease-out';
+}
+
+// ==================== UTILITY ====================
+function randomInt(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
+function addCoins(n) { gameState.coins += n; updateHUD(); }
+function addDiamonds(n) { gameState.diamonds += n; updateHUD(); }
+
+// ==================== SAVE ====================
+async function saveGameData() {
+    if (!currentPlayer) return;
+    const data = {
+        nickname: currentPlayer.nickname, password: currentPlayer.password,
+        x: playerBody ? playerBody.position.x : 0, y: playerBody ? playerBody.position.y : 0, z: playerBody ? playerBody.position.z : 0,
+        coins: gameState.coins, diamonds: gameState.diamonds,
+        hp: gameState.playerHp, maxHp: gameState.playerMaxHp,
+        inventory: {}, tools: {},
+        currentStage: gameState.stage, completedQuests: gameState.completedQuests, deaths: gameState.snakeDeaths
+    };
+    gameState.inventory.forEach((item, i) => { data.inventory['slot_' + i] = item; });
+    await dbSet('players/' + currentPlayer.nickname, data);
+}
+
+setInterval(() => { if (currentPlayer) saveGameData(); }, 30000);
+
+// Shake animation
+const shakeStyle = document.createElement('style');
+shakeStyle.textContent = `@keyframes shake { 0%,100%{transform:translate(0,0)} 10%{transform:translate(-5px,3px)} 20%{transform:translate(5px,-3px)} 30%{transform:translate(-3px,5px)} 40%{transform:translate(3px,-5px)} 50%{transform:translate(-5px,3px)} 60%{transform:translate(5px,-3px)} 70%{transform:translate(-3px,5px)} 80%{transform:translate(3px,-5px)} 90%{transform:translate(-5px,3px)} }`;
+document.head.appendChild(shakeStyle);
