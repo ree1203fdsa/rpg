@@ -1043,6 +1043,314 @@ body {
     color: black;
 }
 
+/* Level Display */
+#level-display {
+    color: #fbbf24;
+    font-size: 0.85em;
+    font-weight: bold;
+    margin-bottom: 4px;
+}
+
+/* XP Bar */
+#xp-bar-container {
+    width: 100%;
+    height: 10px;
+    background: #333;
+    border-radius: 5px;
+    overflow: hidden;
+    position: relative;
+    margin-bottom: 5px;
+}
+
+#xp-bar {
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, #8b5cf6, #a855f7);
+    border-radius: 5px;
+    transition: width 0.3s;
+}
+
+#xp-text {
+    position: absolute;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    font-size: 0.6em;
+    font-weight: bold;
+    text-shadow: 1px 1px 2px #000;
+    color: #e2e8f0;
+}
+
+/* Equipment Screen */
+#equipment-screen {
+    position: fixed;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    background: rgba(10, 10, 40, 0.95);
+    border: 2px solid #a855f7;
+    border-radius: 15px;
+    padding: 20px;
+    z-index: 50;
+    min-width: 320px;
+}
+
+.equip-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 15px;
+}
+
+.equip-header h2 { color: #a855f7; }
+
+.equip-header button {
+    background: rgba(168, 85, 247, 0.3);
+    border: 1px solid #a855f7;
+    color: #fff;
+    padding: 5px 12px;
+    border-radius: 5px;
+    cursor: pointer;
+}
+
+.equip-slot {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    margin-bottom: 6px;
+    background: rgba(255,255,255,0.05);
+    border: 1px solid rgba(168, 85, 247, 0.3);
+    border-radius: 8px;
+}
+
+.equip-label {
+    color: #a78bfa;
+    font-size: 0.8em;
+    min-width: 50px;
+}
+
+.equip-item {
+    color: #e2e8f0;
+    flex: 1;
+    font-size: 0.9em;
+}
+
+.equip-slot button {
+    background: #dc2626;
+    color: white;
+    border: none;
+    padding: 3px 10px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.75em;
+}
+
+#equip-stats {
+    margin-top: 10px;
+    color: #94a3b8;
+    font-size: 0.8em;
+    text-align: center;
+}
+
+/* Ranking Screen */
+#ranking-screen {
+    position: fixed;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    background: rgba(10, 10, 40, 0.95);
+    border: 2px solid #fbbf24;
+    border-radius: 15px;
+    padding: 20px;
+    z-index: 50;
+    min-width: 380px;
+    max-height: 70vh;
+    overflow-y: auto;
+}
+
+.ranking-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 15px;
+}
+
+.ranking-header h2 { color: #fbbf24; }
+
+.ranking-header button {
+    background: rgba(251, 191, 36, 0.3);
+    border: 1px solid #fbbf24;
+    color: #fff;
+    padding: 5px 12px;
+    border-radius: 5px;
+    cursor: pointer;
+}
+
+.ranking-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    margin-bottom: 4px;
+    background: rgba(255,255,255,0.03);
+    border-radius: 6px;
+    font-size: 0.85em;
+}
+
+.ranking-row.top1 { background: rgba(255, 215, 0, 0.15); border: 1px solid rgba(255, 215, 0, 0.3); }
+.ranking-row.top2 { background: rgba(192, 192, 192, 0.1); border: 1px solid rgba(192, 192, 192, 0.2); }
+.ranking-row.top3 { background: rgba(205, 127, 50, 0.1); border: 1px solid rgba(205, 127, 50, 0.2); }
+
+.rank-pos {
+    min-width: 30px;
+    text-align: center;
+    color: #fbbf24;
+    font-weight: bold;
+}
+
+.rank-name {
+    color: #e2e8f0;
+    font-weight: bold;
+    min-width: 80px;
+}
+
+.rank-info {
+    color: #94a3b8;
+    font-size: 0.8em;
+}
+
+/* Chat Panel */
+#chat-panel {
+    position: fixed;
+    bottom: 50px;
+    left: 10px;
+    width: 320px;
+    max-height: 250px;
+    background: rgba(10, 10, 30, 0.9);
+    border: 1px solid rgba(168, 85, 247, 0.4);
+    border-radius: 10px;
+    z-index: 40;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+#chat-messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px;
+    max-height: 190px;
+}
+
+.chat-msg {
+    margin-bottom: 4px;
+    font-size: 0.8em;
+    line-height: 1.3;
+    word-break: break-word;
+}
+
+.chat-name {
+    color: #a855f7;
+    font-weight: bold;
+    margin-right: 5px;
+}
+
+.chat-text {
+    color: #e2e8f0;
+}
+
+#chat-input-row {
+    display: flex;
+    border-top: 1px solid rgba(168, 85, 247, 0.3);
+    padding: 4px;
+}
+
+#chat-input {
+    flex: 1;
+    background: rgba(255,255,255,0.08);
+    border: 1px solid rgba(168, 85, 247, 0.3);
+    border-radius: 5px;
+    color: #fff;
+    padding: 6px 8px;
+    font-size: 0.85em;
+    outline: none;
+}
+
+#chat-input-row button {
+    background: #7c3aed;
+    color: white;
+    border: none;
+    padding: 6px 12px;
+    border-radius: 5px;
+    cursor: pointer;
+    margin-left: 4px;
+    font-size: 0.8em;
+}
+
+/* Minimap */
+#minimap-canvas {
+    position: fixed;
+    bottom: 10px;
+    right: 10px;
+    width: 150px;
+    height: 150px;
+    border: 2px solid rgba(168, 85, 247, 0.5);
+    border-radius: 8px;
+    z-index: 10;
+    background: #1a1a2e;
+}
+
+/* Party Display */
+#party-display {
+    position: fixed;
+    bottom: 170px;
+    right: 10px;
+    width: 150px;
+    background: rgba(0,0,0,0.7);
+    border: 1px solid rgba(96, 165, 250, 0.4);
+    border-radius: 8px;
+    padding: 6px;
+    z-index: 10;
+}
+
+.party-title {
+    color: #60a5fa;
+    font-size: 0.7em;
+    font-weight: bold;
+    margin-bottom: 4px;
+    text-align: center;
+}
+
+.party-member {
+    margin-bottom: 4px;
+}
+
+.party-name {
+    color: #e2e8f0;
+    font-size: 0.65em;
+    display: block;
+}
+
+.party-hp-bg {
+    width: 100%;
+    height: 6px;
+    background: #333;
+    border-radius: 3px;
+    overflow: hidden;
+    margin-top: 2px;
+}
+
+.party-hp-bar {
+    height: 100%;
+    background: #4ade80;
+    border-radius: 3px;
+    transition: width 0.3s;
+}
+
+/* Sound Button */
+#sound-btn {
+    font-size: 1em !important;
+    padding: 4px 8px !important;
+}
+
 /* Scrollbar */
 ::-webkit-scrollbar { width: 6px; }
 ::-webkit-scrollbar-track { background: rgba(0,0,0,0.3); }
@@ -1056,7 +1364,11 @@ body {
     #shop-screen { min-width: unset; width: 90%; }
     #roulette-screen { width: 90%; }
     #controls-hint { display: none; }
-    #menu-buttons { flex-direction: column; }
+    #menu-buttons { flex-direction: column; flex-wrap: wrap; }
+    #minimap-canvas { width: 100px; height: 100px; }
+    #chat-panel { width: 250px; }
+    #ranking-screen { min-width: unset; width: 90%; }
+    #equipment-screen { min-width: unset; width: 90%; }
     #menu-buttons button { font-size: 0.7em; padding: 5px 8px; }
     .inv-slot { width: 45px; height: 45px; font-size: 1.2em; }
     #inventory-grid {

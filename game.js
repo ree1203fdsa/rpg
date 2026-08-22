@@ -49,6 +49,13 @@ window.adminSpawnSnake = adminSpawnSnake;
 window.adminSpawnBoss = adminSpawnBoss;
 window.adminSetRole = adminSetRole;
 window.adminDeletePlayer = adminDeletePlayer;
+window.sendChatMessage = sendChatMessage;
+window.toggleChat = toggleChat;
+window.toggleEquipment = toggleEquipment;
+window.toggleRanking = toggleRanking;
+window.toggleSound = toggleSound;
+window.equipFromInventory = equipFromInventory;
+window.unequipSlot = unequipSlot;
 
 let currentPlayer = null;
 let godMode = false;
@@ -86,7 +93,13 @@ let gameState = {
     snakeDeaths: 0, stage2Phase: 0,
     mineTracesFound: 0, stonesActivated: 0,
     insideMine: false, mineCollapsed: false,
-    documentRead: false, bossRoomReached: false
+    documentRead: false, bossRoomReached: false,
+    level: 1, xp: 0, xpToNext: 50,
+    equipment: { weapon: null, armor: null, accessory: null },
+    defense: 0, attackBonus: 0,
+    kills: 0, stage3Phase: 0,
+    insideRuins: false, tabletsFound: 0,
+    soundOn: true, bgmType: null
 };
 
 // ==================== ASSET LOADER ====================
@@ -243,6 +256,12 @@ async function handleLogin() {
         currentPlayer.x = 0;
         currentPlayer.y = 0;
         currentPlayer.z = 0;
+        currentPlayer.level = 1;
+        currentPlayer.xp = 0;
+        currentPlayer.kills = 0;
+        currentPlayer.defense = 0;
+        currentPlayer.attackBonus = 0;
+        currentPlayer.equipment = { weapon: null, armor: null, accessory: null };
         await dbSet('players/' + nick, currentPlayer);
     }
     startGame();
@@ -264,6 +283,16 @@ async function startGame() {
     gameState.playerMaxHp = currentPlayer.maxHp || 100;
     gameState.stage = currentPlayer.currentStage || 1;
     gameState.completedQuests = currentPlayer.completedQuests || [];
+    gameState.level = currentPlayer.level || 1;
+    gameState.xp = currentPlayer.xp || 0;
+    gameState.xpToNext = getXPForLevel(gameState.level);
+    gameState.kills = currentPlayer.kills || 0;
+    gameState.defense = currentPlayer.defense || 0;
+    gameState.attackBonus = currentPlayer.attackBonus || 0;
+    if (currentPlayer.equipment) {
+        gameState.equipment = currentPlayer.equipment;
+        if (gameState.equipment.weapon) gameState.equippedWeapon = gameState.equipment.weapon;
+    }
     if (currentPlayer.inventory) {
         Object.values(currentPlayer.inventory).forEach(item => { if (item) gameState.inventory.push(item); });
     }
@@ -291,6 +320,11 @@ async function startGame() {
     renderShop();
     drawRoulette();
     startOnlineSync();
+    startChatSync();
+    initAudio();
+    if (gameState.stage === 3 && !gameState.completedQuests.includes('stage3_complete')) {
+        startStage3();
+    }
     gameLoop();
 }
 
@@ -617,6 +651,9 @@ function setupControls() {
         if (e.code === 'KeyI') toggleInventory();
         if (e.code === 'KeyP') toggleShop();
         if (e.code === 'KeyR' && !gameState.inCombat) toggleRoulette();
+        if (e.code === 'KeyE') toggleEquipment();
+        if (e.code === 'KeyT') toggleChat();
+        if (e.code === 'KeyL') toggleRanking();
         if (e.code === 'Backquote') toggleAdmin();
     });
     document.addEventListener('keyup', (e) => { keys[e.code] = false; });
@@ -705,7 +742,9 @@ function gameLoop() {
     updateMineEffects();
     checkSnakeArea();
     updateOnlineLabels();
+    updatePartyDisplay();
     renderer.render(scene, camera);
+    drawMinimap();
 }
 
 function updatePlayer(delta) {
@@ -741,7 +780,12 @@ function updatePlayer(delta) {
         }
     }
 
-    playerBody.position.y = gameState.insideMine ? -10 + PLAYER_HEIGHT : PLAYER_HEIGHT;
+    playerBody.position.y = gameState.insideMine ? -10 + PLAYER_HEIGHT : (gameState.insideRuins ? -20 + PLAYER_HEIGHT : PLAYER_HEIGHT);
+
+    if (gameState.insideMine) playBGM('mine');
+    else if (gameState.insideRuins) playBGM('ruins');
+    else if (gameState.inCombat) playBGM('battle');
+    else playBGM('village');
     playerBody.position.x = Math.max(-140, Math.min(140, playerBody.position.x));
     playerBody.position.z = Math.max(-140, Math.min(140, playerBody.position.z));
 
@@ -971,6 +1015,34 @@ function updateEnemies(delta) {
                     showInvestigationText('어둠의 포효!');
                 }
             }
+        } else if (data.name === '고대의 수호자') {
+            data.attackCooldown -= delta;
+            data.specialCooldown -= delta;
+            enemy.position.y = (gameState.insideRuins ? -20 : 0) + Math.sin(Date.now() * 0.001) * 0.2;
+
+            if (dist > 4) {
+                const mv = dir.normalize().multiplyScalar(3 * delta);
+                enemy.position.x += mv.x; enemy.position.z += mv.z;
+            }
+            if (data.hp <= data.maxHp / 2 && data.phase === 1) {
+                data.phase = 2; data.attackInterval = 1.5;
+                showInvestigationText('수호자가 분노한다!');
+                shakeScreen();
+            }
+            if (data.attackCooldown <= 0 && dist < 6) {
+                damagePlayer(randomInt(data.damage[0], data.damage[1]));
+                showInvestigationText('돌 주먹!');
+                data.attackCooldown = data.attackInterval;
+            }
+            if (data.specialCooldown <= 0 && dist < 15) {
+                data.specialCooldown = 5;
+                for (let i = 0; i < 3; i++) {
+                    const angle = (Math.PI * 2 / 3) * i;
+                    spawnProjectile(enemy.position.clone().add(new THREE.Vector3(Math.sin(angle) * 2, 1, Math.cos(angle) * 2)), 0xffaa00);
+                }
+                damagePlayer(randomInt(3, 7));
+                showInvestigationText('고대의 파동!');
+            }
         }
     });
 }
@@ -992,8 +1064,10 @@ function attackEnemy() {
     if (playerBody.position.distanceTo(enemy.position) > 5) {
         showInvestigationText('너무 멀다!'); return;
     }
-    const dmg = randomInt(gameState.equippedWeapon.minDmg, gameState.equippedWeapon.maxDmg);
+    const baseDmg = randomInt(gameState.equippedWeapon.minDmg, gameState.equippedWeapon.maxDmg);
+    const dmg = baseDmg + gameState.attackBonus;
     enemy.userData.hp -= dmg;
+    playSFX('attack');
     showDamageNumber(dmg, enemy.position);
     enemy.children.forEach(c => {
         if (c.material) {
@@ -1011,9 +1085,13 @@ function onEnemyDeath(enemy) {
     enemies = enemies.filter(e => e !== enemy);
     document.getElementById('enemy-hp-container').style.display = 'none';
     gameState.inCombat = false;
+    gameState.kills++;
     if (isMobile) document.getElementById('mobile-attack-btn').style.display = 'none';
+    playSFX('kill');
 
     if (enemy.userData.name === '독사') {
+        gainXP(20);
+        addCoins(5);
         showQuest('퀘스트 완료: 독사 죽이기');
         setTimeout(() => {
             showQuest('마을 이장에게 가기');
@@ -1021,6 +1099,8 @@ function onEnemyDeath(enemy) {
             gameState.quest = 'return_chief';
         }, 2000);
     } else if (enemy.userData.name === '폐광의 그림자') {
+        gainXP(100);
+        addCoins(30);
         showQuest('퀘스트 완료: 폐광의 그림자를 처치하기');
         if (mineObjects.lightSpot) {
             mineObjects.lightSpot.visible = true;
@@ -1028,7 +1108,21 @@ function onEnemyDeath(enemy) {
             mineObjects.lightSpot.position.y = (gameState.insideMine ? -10 : 0) + 1;
         }
         setTimeout(() => { showQuest('이상한 빛의 정체 확인하기'); gameState.quest = 'check_light'; }, 2000);
+    } else if (enemy.userData.name === '고대의 수호자') {
+        gainXP(200);
+        addCoins(100);
+        addDiamonds(10);
+        showQuest('퀘스트 완료: 고대의 수호자를 처치하기');
+        setTimeout(() => {
+            addToInventory({ name: '고대의 유물', icon: '🏺', type: 'special', desc: '고대 유적에서 발견된 신비한 유물.' });
+            showItemNotification('고대의 유물을 획득했습니다!');
+            showQuest('마을로 돌아가기');
+            gameState.quest = 'return_village_s3';
+            setArrowTarget(new THREE.Vector3(-5, 0, 8));
+            if (gameState.insideRuins) exitRuins();
+        }, 2000);
     }
+    saveGameData();
 }
 
 function updateEnemyHP(enemy) {
@@ -1087,6 +1181,25 @@ function handleInteraction() {
     else if (data.type === 'activationStone') handleStoneInteraction(gameState.interactTarget);
     else if (data.type === 'sealedDoor') handleSealedDoorInteraction();
     else if (data.type === 'mysteryLight') handleMysteryLightInteraction(gameState.interactTarget);
+    else if (data.type === 'tablet' && !data.investigated) {
+        data.investigated = true;
+        gameState.tabletsFound++;
+        showInvestigationText(data.text);
+        showItemNotification('석판 발견! (' + gameState.tabletsFound + '/3)');
+        if (gameState.tabletsFound >= 3) {
+            setTimeout(() => {
+                showInvestigationText('수호자의 방이 열렸다!');
+                shakeScreen();
+                if (buildings.guardianDoor) buildings.guardianDoor.position.y = -25;
+                gameState.quest = 'fight_guardian';
+                showQuest('고대의 수호자를 처치하기');
+                setTimeout(() => spawnAncientGuardian(), 2000);
+            }, 1500);
+        }
+    }
+    else if (data.type === 'sealedDoor2') {
+        if (gameState.tabletsFound < 3) showInvestigationText('석판 ' + gameState.tabletsFound + '/3 - 더 많은 석판이 필요하다.');
+    }
     else if (data.type === 'trace' && !data.investigated) {
         data.investigated = true; gameState.mineTracesFound++;
         showInvestigationText(data.text);
@@ -1094,10 +1207,7 @@ function handleInteraction() {
 }
 
 // ==================== NPC DIALOGUES ====================
-function handleNPCInteraction(npc) {
-    if (npc.userData.name === '마을 이장') handleChiefDialogue();
-    else if (npc.userData.name === '마을 주민') handleVillagerDialogue();
-}
+// handleNPCInteraction is defined below with stage 3 NPC support
 
 function handleChiefDialogue() {
     if (gameState.quest === 'return_chief') {
@@ -1154,7 +1264,24 @@ function handleVillagerDialogue() {
             gameState.quest = null; clearArrow();
             addCoins(100); addDiamonds(5);
             showItemNotification('2스테이지 완료! 코인 +100, 다이아몬드 +5');
-            setTimeout(() => { showStageComplete('2 STAGE CLEAR!', 4000); gameState.stage = 3; saveGameData(); }, 2000);
+            setTimeout(() => {
+                showStageComplete('2 STAGE CLEAR!', 4000);
+                gameState.stage = 3; saveGameData();
+                setTimeout(() => startStage3(), 5000);
+            }, 2000);
+        });
+    } else if (gameState.quest === 'return_village_s3') {
+        startDialogue('마을 주민', [
+            '그건... 고대의 유물이 아닌가!',
+            '전설에 따르면, 이 유물에는 이 세계의 비밀이 담겨 있다고 한다.',
+            '네가 진정한 모험가라는 것을 증명했구나. 축하한다!'
+        ], () => {
+            gameState.completedQuests.push('stage3_complete');
+            gameState.quest = null; clearArrow();
+            addCoins(200); addDiamonds(20);
+            showItemNotification('3스테이지 완료! 코인 +200, 다이아몬드 +20');
+            setTimeout(() => showStageComplete('3 STAGE CLEAR! 게임 클리어!', 5000), 2000);
+            saveGameData();
         });
     } else {
         startDialogue('마을 주민', ['좋은 하루 되거라.'], null);
@@ -1187,21 +1314,7 @@ function advanceDialogue() {
 }
 
 // ==================== DOORS ====================
-function handleDoorInteraction(door) {
-    if (door.userData.name === 'castleDoor') {
-        door.userData.isOpen = true;
-        door.visible = false;
-        showInvestigationText('성문이 열렸습니다.');
-    } else if (door.userData.name === 'mineDoor') {
-        if (gameState.stage2Phase >= 1) {
-            door.userData.isOpen = true;
-            door.visible = false;
-            showInvestigationText('철문이 천천히 열렸습니다.');
-        } else {
-            showInvestigationText('아직 갈 이유가 없다.');
-        }
-    }
-}
+// handleDoorInteraction is defined below with stage 3 support
 
 // ==================== MINE ====================
 function enterMine() {
@@ -1347,7 +1460,10 @@ function startCombat(enemy) {
 
 function damagePlayer(dmg) {
     if (godMode) return;
+    const totalDef = gameState.defense + (gameState.equipment.armor ? gameState.equipment.armor.defense || 0 : 0) + (gameState.equipment.accessory ? gameState.equipment.accessory.defense || 0 : 0);
+    dmg = Math.max(1, dmg - totalDef);
     gameState.playerHp -= dmg;
+    playSFX('hit');
     showDamageNumber(dmg, playerBody.position, true);
     updateHUD();
     const flash = document.createElement('div');
@@ -1480,7 +1596,23 @@ function showItemDetail(index) {
     const useBtn = document.getElementById('item-use-btn');
     if (item.type === 'weapon') {
         useBtn.style.display = 'block'; useBtn.textContent = '장착';
-        useBtn.onclick = () => { gameState.equippedWeapon = item; showInvestigationText(item.name + ' 장착!'); };
+        useBtn.onclick = () => { equipFromInventory(index, 'weapon'); };
+    } else if (item.type === 'armor') {
+        useBtn.style.display = 'block'; useBtn.textContent = '장착';
+        useBtn.onclick = () => { equipFromInventory(index, 'armor'); };
+    } else if (item.type === 'accessory') {
+        useBtn.style.display = 'block'; useBtn.textContent = '장착';
+        useBtn.onclick = () => { equipFromInventory(index, 'accessory'); };
+    } else if (item.type === 'potion') {
+        useBtn.style.display = 'block'; useBtn.textContent = '사용';
+        useBtn.onclick = () => {
+            gameState.playerHp = Math.min(gameState.playerMaxHp, gameState.playerHp + (item.heal || 30));
+            gameState.inventory.splice(index, 1);
+            updateHUD(); renderInventoryGrid();
+            document.getElementById('item-detail').style.display = 'none';
+            showInvestigationText(item.name + ' 사용!');
+            saveGameData();
+        };
     } else if (item.type === 'document') {
         useBtn.style.display = 'block'; useBtn.textContent = '읽기';
         useBtn.onclick = () => showDocument(item);
@@ -1504,7 +1636,11 @@ const shopItems = [
     { name: '체력 포션', icon: '🧪', type: 'potion', desc: '체력을 30 회복합니다.', price: 15, heal: 30 },
     { name: '큰 체력 포션', icon: '🧪', type: 'potion', desc: '체력을 60 회복합니다.', price: 30, heal: 60 },
     { name: '강화석', icon: '💠', type: 'upgrade', desc: '무기 대미지 +1', price: 50 },
-    { name: '보호의 반지', icon: '💍', type: 'accessory', desc: '받는 대미지 -1', price: 80 },
+    { name: '가죽 갑옷', icon: '🛡️', type: 'armor', desc: '방어력 +2', price: 60, defense: 2, slot: 'armor' },
+    { name: '철 갑옷', icon: '🛡️', type: 'armor', desc: '방어력 +5', price: 150, defense: 5, slot: 'armor' },
+    { name: '보호의 반지', icon: '💍', type: 'accessory', desc: '방어력 +1, 최대HP +20', price: 80, defense: 1, maxHpBonus: 20, slot: 'accessory' },
+    { name: '힘의 목걸이', icon: '📿', type: 'accessory', desc: '공격력 +2', price: 120, attackBonus: 2, slot: 'accessory' },
+    { name: '강철 검', icon: '⚔️', type: 'weapon', desc: '대미지 3~8', price: 200, minDmg: 3, maxDmg: 8, slot: 'weapon' },
 ];
 
 function renderShop() {
@@ -1625,6 +1761,12 @@ function updateHUD() {
         'linear-gradient(90deg, #dc2626, #f87171)';
     document.getElementById('coin-display').textContent = '코인: ' + gameState.coins;
     document.getElementById('diamond-display').textContent = '다이아: ' + gameState.diamonds;
+    const lvlEl = document.getElementById('level-display');
+    if (lvlEl) lvlEl.textContent = 'Lv.' + gameState.level;
+    const xpBar = document.getElementById('xp-bar');
+    if (xpBar) xpBar.style.width = (gameState.xp / gameState.xpToNext * 100) + '%';
+    const xpText = document.getElementById('xp-text');
+    if (xpText) xpText.textContent = gameState.xp + ' / ' + gameState.xpToNext;
 }
 
 function showQuest(text) {
@@ -1662,7 +1804,7 @@ function shakeScreen() {
 
 // ==================== UTILITY ====================
 function randomInt(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
-function addCoins(n) { gameState.coins += n; updateHUD(); }
+function addCoins(n) { gameState.coins += n; updateHUD(); playSFX('coin'); }
 function addDiamonds(n) { gameState.diamonds += n; updateHUD(); }
 
 // ==================== SAVE ====================
@@ -1670,12 +1812,17 @@ async function saveGameData() {
     if (!currentPlayer) return;
     const data = {
         nickname: currentPlayer.nickname, password: currentPlayer.password,
+        role: currentPlayer.role || 'player',
         x: playerBody ? playerBody.position.x : 0, y: playerBody ? playerBody.position.y : 0, z: playerBody ? playerBody.position.z : 0,
         coins: gameState.coins, diamonds: gameState.diamonds,
         hp: gameState.playerHp, maxHp: gameState.playerMaxHp,
         inventory: {}, tools: {},
-        currentStage: gameState.stage, completedQuests: gameState.completedQuests, deaths: gameState.snakeDeaths
+        currentStage: gameState.stage, completedQuests: gameState.completedQuests, deaths: gameState.snakeDeaths,
+        level: gameState.level, xp: gameState.xp, kills: gameState.kills,
+        defense: gameState.defense, attackBonus: gameState.attackBonus,
+        equipment: gameState.equipment
     };
+    if (currentPlayer.resetOnLogin) data.resetOnLogin = true;
     gameState.inventory.forEach((item, i) => { data.inventory['slot_' + i] = item; });
     await dbSet('players/' + currentPlayer.nickname, data);
 }
@@ -1700,6 +1847,7 @@ async function uploadPosition() {
         inMine: gameState.insideMine,
         hp: gameState.playerHp,
         maxHp: gameState.playerMaxHp,
+        level: gameState.level,
         lastSeen: Date.now()
     };
     try {
@@ -1731,6 +1879,7 @@ async function syncOnlinePlayers() {
             count++;
             activeNames.add(name);
 
+            onlinePlayers[name] = info;
             if (!onlineModels[name]) {
                 createOnlinePlayer(name, info);
             }
@@ -2014,7 +2163,635 @@ async function adminDeletePlayer() {
     adminMsg('admin-super-msg', target + ' 삭제 완료');
 }
 
+// ==================== LEVEL / XP SYSTEM ====================
+function getXPForLevel(lv) { return Math.floor(50 * Math.pow(lv, 1.4)); }
+
+function gainXP(amount) {
+    gameState.xp += amount;
+    showInvestigationText('+' + amount + ' XP');
+    while (gameState.xp >= gameState.xpToNext) {
+        gameState.xp -= gameState.xpToNext;
+        gameState.level++;
+        gameState.xpToNext = getXPForLevel(gameState.level);
+        gameState.playerMaxHp += 10;
+        gameState.playerHp = gameState.playerMaxHp;
+        gameState.attackBonus += 1;
+        playSFX('levelup');
+        showStageComplete('LEVEL UP! Lv.' + gameState.level, 2000);
+    }
+    updateHUD();
+}
+
+// ==================== EQUIPMENT SYSTEM ====================
+function equipFromInventory(index, slot) {
+    const item = gameState.inventory[index];
+    if (!item) return;
+    const prev = gameState.equipment[slot];
+    if (prev) gameState.inventory.push(prev);
+    gameState.equipment[slot] = item;
+    gameState.inventory.splice(index, 1);
+    if (slot === 'weapon') gameState.equippedWeapon = item;
+    recalcEquipStats();
+    renderInventoryGrid();
+    renderEquipment();
+    showInvestigationText(item.name + ' 장착!');
+    saveGameData();
+}
+
+function unequipSlot(slot) {
+    const item = gameState.equipment[slot];
+    if (!item) return;
+    if (gameState.inventory.length >= 18) { showInvestigationText('인벤토리가 가득 찼습니다!'); return; }
+    gameState.inventory.push(item);
+    gameState.equipment[slot] = null;
+    if (slot === 'weapon') gameState.equippedWeapon = null;
+    recalcEquipStats();
+    renderInventoryGrid();
+    renderEquipment();
+    showInvestigationText(item.name + ' 해제!');
+    saveGameData();
+}
+
+function recalcEquipStats() {
+    let def = 0, atk = 0;
+    const eq = gameState.equipment;
+    if (eq.armor) def += eq.armor.defense || 0;
+    if (eq.accessory) {
+        def += eq.accessory.defense || 0;
+        atk += eq.accessory.attackBonus || 0;
+    }
+    gameState.defense = def;
+}
+
+function renderEquipment() {
+    const container = document.getElementById('equip-slots');
+    if (!container) return;
+    container.innerHTML = '';
+    const slots = [
+        { key: 'weapon', label: '무기' },
+        { key: 'armor', label: '방어구' },
+        { key: 'accessory', label: '장신구' }
+    ];
+    slots.forEach(s => {
+        const div = document.createElement('div');
+        div.className = 'equip-slot';
+        const item = gameState.equipment[s.key];
+        div.innerHTML = `<span class="equip-label">${s.label}</span><span class="equip-item">${item ? item.icon + ' ' + item.name : '없음'}</span>`;
+        if (item) {
+            const btn = document.createElement('button');
+            btn.textContent = '해제';
+            btn.onclick = () => unequipSlot(s.key);
+            div.appendChild(btn);
+        }
+        container.appendChild(div);
+    });
+    const statsDiv = document.getElementById('equip-stats');
+    if (statsDiv) statsDiv.innerHTML = `공격 보너스: +${gameState.attackBonus} | 방어력: ${gameState.defense} | 레벨: ${gameState.level}`;
+}
+
+function toggleEquipment() {
+    const el = document.getElementById('equipment-screen');
+    const isOpen = el.style.display !== 'none';
+    el.style.display = isOpen ? 'none' : 'block';
+    if (!isOpen) renderEquipment();
+}
+
+// ==================== CHAT SYSTEM ====================
+let chatMessages = [];
+let chatSyncInterval = null;
+
+function startChatSync() {
+    loadChat();
+    chatSyncInterval = setInterval(loadChat, 3000);
+}
+
+async function loadChat() {
+    try {
+        const data = await dbGet('chat');
+        if (!data) return;
+        const msgs = Object.entries(data).sort((a, b) => a[0].localeCompare(b[0])).slice(-30);
+        chatMessages = msgs.map(([k, v]) => v);
+        renderChat();
+    } catch (e) {}
+}
+
+function renderChat() {
+    const box = document.getElementById('chat-messages');
+    if (!box) return;
+    box.innerHTML = '';
+    chatMessages.forEach(m => {
+        const div = document.createElement('div');
+        div.className = 'chat-msg';
+        div.innerHTML = `<span class="chat-name">${m.name}</span> <span class="chat-text">${escapeHtml(m.text)}</span>`;
+        box.appendChild(div);
+    });
+    box.scrollTop = box.scrollHeight;
+}
+
+function escapeHtml(str) {
+    const d = document.createElement('div');
+    d.textContent = str;
+    return d.innerHTML;
+}
+
+async function sendChatMessage() {
+    const input = document.getElementById('chat-input');
+    if (!input) return;
+    const text = input.value.trim();
+    if (!text || !currentPlayer) return;
+    input.value = '';
+    const key = Date.now() + '_' + Math.random().toString(36).substr(2, 5);
+    try {
+        await dbSet('chat/' + key, { name: currentPlayer.nickname, text, time: Date.now() });
+        loadChat();
+    } catch (e) {}
+}
+
+function toggleChat() {
+    const el = document.getElementById('chat-panel');
+    el.style.display = el.style.display === 'none' ? 'flex' : 'none';
+    if (el.style.display === 'flex') {
+        loadChat();
+        document.getElementById('chat-input').focus();
+    }
+}
+
+// ==================== MINIMAP ====================
+function drawMinimap() {
+    const canvas = document.getElementById('minimap-canvas');
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    const w = canvas.width, h = canvas.height;
+    const scale = 0.5;
+    const cx = w / 2, cy = h / 2;
+    const px = playerBody.position.x, pz = playerBody.position.z;
+
+    ctx.clearRect(0, 0, w, h);
+    ctx.fillStyle = gameState.insideMine ? '#1a1a1a' : (gameState.insideRuins ? '#2a1a0a' : '#2d4a2d');
+    ctx.fillRect(0, 0, w, h);
+
+    ctx.strokeStyle = 'rgba(168,85,247,0.3)';
+    ctx.lineWidth = 0.5;
+    for (let i = -140; i <= 140; i += 20) {
+        const sx = cx + (i - px) * scale;
+        const sy = cy + (i - pz) * scale;
+        if (sx > 0 && sx < w) { ctx.beginPath(); ctx.moveTo(sx, 0); ctx.lineTo(sx, h); ctx.stroke(); }
+        if (sy > 0 && sy < w) { ctx.beginPath(); ctx.moveTo(0, sy); ctx.lineTo(w, sy); ctx.stroke(); }
+    }
+
+    ctx.fillStyle = '#8B7355';
+    const pathPoints = [[0, -60, 4, 80], [10, 0, 60, 4]];
+    pathPoints.forEach(([x, z, rw, rh]) => {
+        ctx.fillRect(cx + (x - rw/2 - px) * scale, cy + (z - rh/2 - pz) * scale, rw * scale, rh * scale);
+    });
+
+    ctx.fillStyle = '#fbbf24';
+    buildings && Object.entries(buildings).forEach(([name, obj]) => {
+        if (!obj || !obj.position) return;
+        const sx = cx + (obj.position.x - px) * scale;
+        const sy = cy + (obj.position.z - pz) * scale;
+        if (sx > 2 && sx < w - 2 && sy > 2 && sy < h - 2) {
+            ctx.fillRect(sx - 2, sy - 2, 4, 4);
+        }
+    });
+
+    npcs.forEach(npc => {
+        const sx = cx + (npc.position.x - px) * scale;
+        const sy = cy + (npc.position.z - pz) * scale;
+        if (sx > 2 && sx < w - 2 && sy > 2 && sy < h - 2) {
+            ctx.fillStyle = '#4ade80';
+            ctx.beginPath(); ctx.arc(sx, sy, 3, 0, Math.PI * 2); ctx.fill();
+        }
+    });
+
+    enemies.forEach(e => {
+        if (e.userData.hp <= 0) return;
+        const sx = cx + (e.position.x - px) * scale;
+        const sy = cy + (e.position.z - pz) * scale;
+        if (sx > 2 && sx < w - 2 && sy > 2 && sy < h - 2) {
+            ctx.fillStyle = '#f87171';
+            ctx.beginPath(); ctx.arc(sx, sy, 3, 0, Math.PI * 2); ctx.fill();
+        }
+    });
+
+    for (const [name, om] of Object.entries(onlineModels)) {
+        if (!om.group.visible) continue;
+        const sx = cx + (om.group.position.x - px) * scale;
+        const sy = cy + (om.group.position.z - pz) * scale;
+        if (sx > 2 && sx < w - 2 && sy > 2 && sy < h - 2) {
+            ctx.fillStyle = '#60a5fa';
+            ctx.beginPath(); ctx.arc(sx, sy, 3, 0, Math.PI * 2); ctx.fill();
+        }
+    }
+
+    ctx.fillStyle = '#fff';
+    ctx.beginPath(); ctx.arc(cx, cy, 4, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = '#a855f7';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    const dir = yaw;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(cx + Math.sin(dir) * -10, cy + Math.cos(dir) * -10);
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    ctx.strokeStyle = 'rgba(168,85,247,0.6)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(0, 0, w, h);
+}
+
+// ==================== RANKING SYSTEM ====================
+async function loadRanking() {
+    const container = document.getElementById('ranking-list');
+    if (!container) return;
+    container.innerHTML = '<div style="color:#a78bfa;text-align:center;">로딩 중...</div>';
+    try {
+        const players = await dbGet('players');
+        if (!players) { container.innerHTML = '<div style="color:#ef4444;">데이터 없음</div>'; return; }
+        const arr = Object.entries(players).map(([name, p]) => ({
+            name, level: p.level || 1, coins: p.coins || 0, kills: p.kills || 0, stage: p.currentStage || 1
+        }));
+        arr.sort((a, b) => b.level - a.level || b.kills - a.kills || b.coins - a.coins);
+        container.innerHTML = '';
+        arr.slice(0, 20).forEach((p, i) => {
+            const div = document.createElement('div');
+            div.className = 'ranking-row' + (i < 3 ? ' top' + (i + 1) : '');
+            const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : (i + 1);
+            div.innerHTML = `<span class="rank-pos">${medal}</span><span class="rank-name">${p.name}</span><span class="rank-info">Lv.${p.level} | S${p.stage} | 처치:${p.kills} | 코인:${p.coins}</span>`;
+            container.appendChild(div);
+        });
+    } catch (e) { container.innerHTML = '<div style="color:#ef4444;">로딩 실패</div>'; }
+}
+
+function toggleRanking() {
+    const el = document.getElementById('ranking-screen');
+    const isOpen = el.style.display !== 'none';
+    el.style.display = isOpen ? 'none' : 'block';
+    if (!isOpen) loadRanking();
+}
+
+// ==================== STAGE 3 ====================
+function startStage3() {
+    gameState.stage = 3;
+    gameState.stage3Phase = 0;
+    gameState.tabletsFound = 0;
+    gameState.insideRuins = false;
+    showStageComplete('3스테이지: 고대 유적', 3000);
+    setTimeout(() => {
+        playerBody.position.set(-6, PLAYER_HEIGHT, 5);
+        yaw = 0; pitch = 0;
+        buildStage3World();
+    }, 3000);
+}
+
+function buildStage3World() {
+    const desertGround = new THREE.Mesh(
+        new THREE.PlaneGeometry(80, 80),
+        new THREE.MeshLambertMaterial({ color: 0xC2A645 })
+    );
+    desertGround.rotation.x = -Math.PI / 2;
+    desertGround.position.set(80, 0.01, 0);
+    desertGround.receiveShadow = true;
+    scene.add(desertGround);
+
+    const pillarGeo = new THREE.CylinderGeometry(0.8, 1, 6, 8);
+    const pillarMat = new THREE.MeshLambertMaterial({ color: 0xA08050 });
+    const pillarPositions = [[60, 3, -5], [60, 3, 5], [70, 3, -8], [70, 3, 8], [80, 3, -5], [80, 3, 5], [90, 3, -3], [90, 3, 3]];
+    pillarPositions.forEach(([x, y, z]) => {
+        const p = new THREE.Mesh(pillarGeo, pillarMat);
+        p.position.set(x, y, z); p.castShadow = true; scene.add(p);
+    });
+
+    const ruinsEntrance = new THREE.Mesh(
+        new THREE.BoxGeometry(6, 4, 1),
+        new THREE.MeshLambertMaterial({ color: 0x705030 })
+    );
+    ruinsEntrance.position.set(100, 2, 0);
+    ruinsEntrance.userData = { name: 'ruinsEntrance', type: 'door', isOpen: false };
+    scene.add(ruinsEntrance);
+    buildings.ruinsEntrance = ruinsEntrance;
+    interactables.push(ruinsEntrance);
+
+    const sage = createNPC('고대의 현자', 65, 0, 0, 0x886622);
+    npcs.push(sage);
+
+    for (let i = 0; i < 10; i++) {
+        const cactus = new THREE.Group();
+        const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.4, 2, 6), new THREE.MeshLambertMaterial({ color: 0x2d5a1e }));
+        trunk.position.y = 1; cactus.add(trunk);
+        const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.2, 1, 6), new THREE.MeshLambertMaterial({ color: 0x3a7a28 }));
+        arm.position.set(0.5, 1.5, 0); arm.rotation.z = Math.PI / 3; cactus.add(arm);
+        cactus.position.set(55 + Math.random() * 50, 0, (Math.random() - 0.5) * 40);
+        cactus.castShadow = true;
+        scene.add(cactus);
+    }
+
+    const signPost = new THREE.Mesh(new THREE.BoxGeometry(0.2, 2, 1), new THREE.MeshLambertMaterial({ color: 0x8B4513 }));
+    signPost.position.set(50, 1, 0);
+    scene.add(signPost);
+
+    buildRuinsInterior();
+}
+
+function buildRuinsInterior() {
+    const floorMat = new THREE.MeshLambertMaterial({ color: 0x3a2a1a });
+    const wallMat = new THREE.MeshLambertMaterial({ color: 0x4a3a2a });
+
+    const floor = new THREE.Mesh(new THREE.PlaneGeometry(60, 60), floorMat);
+    floor.rotation.x = -Math.PI / 2; floor.position.set(100, -20.01, 0);
+    floor.receiveShadow = true; scene.add(floor);
+
+    for (let i = 0; i < 4; i++) {
+        const wall = new THREE.Mesh(new THREE.BoxGeometry(60, 6, 1), wallMat);
+        const positions = [[100, -17, -30], [100, -17, 30], [70, -17, 0], [130, -17, 0]];
+        const rotations = [0, 0, Math.PI / 2, Math.PI / 2];
+        wall.position.set(positions[i][0], positions[i][1], positions[i][2]);
+        if (i >= 2) wall.rotation.y = rotations[i];
+        scene.add(wall);
+    }
+
+    const tabletPositions = [[85, -19, -15], [110, -19, 10], [120, -19, -20]];
+    tabletPositions.forEach(([x, y, z], idx) => {
+        const tablet = new THREE.Mesh(
+            new THREE.BoxGeometry(1, 1.5, 0.3),
+            new THREE.MeshLambertMaterial({ color: 0xaa8844, emissive: 0x332200 })
+        );
+        tablet.position.set(x, y + 0.75, z);
+        tablet.userData = { name: 'tablet_' + idx, type: 'tablet', investigated: false, text: ['첫 번째 석판: 어둠 속에 빛이 있으리라.', '두 번째 석판: 수호자는 잠들어 있다.', '세 번째 석판: 세 석판이 모이면 문이 열리리라.'][idx] };
+        scene.add(tablet);
+        interactables.push(tablet);
+    });
+
+    const bossRoom = new THREE.Mesh(
+        new THREE.BoxGeometry(3, 3, 0.5),
+        new THREE.MeshLambertMaterial({ color: 0x664400, emissive: 0x221100 })
+    );
+    bossRoom.position.set(100, -18.5, -25);
+    bossRoom.userData = { name: 'guardianDoor', type: 'sealedDoor2' };
+    scene.add(bossRoom);
+    buildings.guardianDoor = bossRoom;
+    interactables.push(bossRoom);
+}
+
+function createNPC(name, x, y, z, bodyColor) {
+    const group = new THREE.Group();
+    const body = new THREE.Mesh(new THREE.BoxGeometry(0.8, 1.2, 0.6), new THREE.MeshLambertMaterial({ color: bodyColor }));
+    body.position.y = 0.9; body.castShadow = true; group.add(body);
+    const head = new THREE.Mesh(new THREE.SphereGeometry(0.35, 10, 10), new THREE.MeshLambertMaterial({ color: 0xffcc88 }));
+    head.position.y = 1.85; head.castShadow = true; group.add(head);
+    const hat = new THREE.Mesh(new THREE.ConeGeometry(0.4, 0.6, 8), new THREE.MeshLambertMaterial({ color: bodyColor }));
+    hat.position.y = 2.3; group.add(hat);
+    group.position.set(x, y, z);
+    group.userData = { name, type: 'npc' };
+    scene.add(group);
+    return group;
+}
+
+function enterRuins() {
+    if (gameState.insideRuins) return;
+    gameState.insideRuins = true;
+    playerBody.position.set(100, -20 + PLAYER_HEIGHT, 25);
+    scene.background = new THREE.Color(0x1a0a00);
+    scene.fog = new THREE.Fog(0x1a0a00, 5, 40);
+    showQuest('고대 유적 조사하기');
+}
+
+function exitRuins() {
+    gameState.insideRuins = false;
+    playerBody.position.set(98, PLAYER_HEIGHT, 0);
+    scene.background = new THREE.Color(0x87CEEB);
+    scene.fog = new THREE.Fog(0x87CEEB, 60, 250);
+}
+
+function spawnAncientGuardian() {
+    const group = new THREE.Group();
+    const body = new THREE.Mesh(new THREE.BoxGeometry(2.5, 3.5, 2), new THREE.MeshLambertMaterial({ color: 0x8B7355, emissive: 0x332200 }));
+    body.position.y = 1.75; body.castShadow = true; group.add(body);
+    const head = new THREE.Mesh(new THREE.BoxGeometry(1.5, 1.5, 1.5), new THREE.MeshLambertMaterial({ color: 0x9B8365, emissive: 0x332200 }));
+    head.position.y = 4; head.castShadow = true; group.add(head);
+    for (const sx of [-0.3, 0.3]) {
+        const eye = new THREE.Mesh(new THREE.SphereGeometry(0.2, 8, 8), new THREE.MeshBasicMaterial({ color: 0xffaa00 }));
+        eye.position.set(sx, 4.2, -0.6); group.add(eye);
+    }
+    for (const side of [-1, 1]) {
+        const arm = new THREE.Mesh(new THREE.BoxGeometry(0.8, 2.5, 0.8), new THREE.MeshLambertMaterial({ color: 0x7B6345 }));
+        arm.position.set(side * 1.8, 2, 0); group.add(arm);
+        const fist = new THREE.Mesh(new THREE.SphereGeometry(0.5, 8, 8), new THREE.MeshLambertMaterial({ color: 0x6B5335 }));
+        fist.position.set(side * 1.8, 0.5, 0); group.add(fist);
+    }
+    group.position.set(100, -20, -22);
+    group.userData = {
+        name: '고대의 수호자', type: 'enemy', hp: 300, maxHp: 300,
+        damage: [5, 12], attackCooldown: 0, attackInterval: 2,
+        phase: 1, specialCooldown: 0, teleportCooldown: 0, roarCooldown: 0
+    };
+    scene.add(group); enemies.push(group);
+    return group;
+}
+
+// ==================== STAGE 3 INTERACTIONS ====================
+function handleNPCInteraction(npc) {
+    if (npc.userData.name === '마을 이장') handleChiefDialogue();
+    else if (npc.userData.name === '마을 주민') handleVillagerDialogue();
+    else if (npc.userData.name === '고대의 현자') handleSageDialogue();
+}
+
+function handleSageDialogue() {
+    if (gameState.stage !== 3) {
+        startDialogue('고대의 현자', ['때가 되면 다시 만나게 될 것이다.'], null);
+        return;
+    }
+    if (gameState.stage3Phase === 0) {
+        startDialogue('고대의 현자', [
+            '오랜 세월을 기다렸다. 드디어 모험가가 왔군.',
+            '동쪽의 고대 유적 안에 세 개의 석판이 숨겨져 있다.',
+            '석판을 모두 찾으면 수호자의 방이 열릴 것이다.',
+            '하지만 조심하거라. 수호자는 강력하다.'
+        ], () => {
+            gameState.stage3Phase = 1;
+            showQuest('고대 유적으로 가기');
+            setArrowTarget(new THREE.Vector3(100, 2, 0));
+        });
+    } else {
+        startDialogue('고대의 현자', ['석판을 모두 찾았는가? 유적 안을 잘 살펴보거라.'], null);
+    }
+}
+
+// ==================== SOUND SYSTEM ====================
+let audioCtx = null;
+let bgmGain = null;
+let bgmOsc = null;
+
+function initAudio() {
+    try {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        bgmGain = audioCtx.createGain();
+        bgmGain.gain.value = 0.08;
+        bgmGain.connect(audioCtx.destination);
+    } catch (e) {}
+}
+
+function resumeAudio() {
+    if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+}
+
+function playBGM(type) {
+    if (!audioCtx || !gameState.soundOn || gameState.bgmType === type) return;
+    stopBGM();
+    gameState.bgmType = type;
+    bgmOsc = audioCtx.createOscillator();
+    const lfo = audioCtx.createOscillator();
+    const lfoGain = audioCtx.createGain();
+
+    if (type === 'village') {
+        bgmOsc.type = 'sine';
+        bgmOsc.frequency.value = 220;
+        lfo.frequency.value = 0.5;
+        lfoGain.gain.value = 20;
+    } else if (type === 'mine') {
+        bgmOsc.type = 'sawtooth';
+        bgmOsc.frequency.value = 80;
+        lfo.frequency.value = 0.2;
+        lfoGain.gain.value = 10;
+        bgmGain.gain.value = 0.03;
+    } else if (type === 'battle') {
+        bgmOsc.type = 'square';
+        bgmOsc.frequency.value = 150;
+        lfo.frequency.value = 4;
+        lfoGain.gain.value = 30;
+        bgmGain.gain.value = 0.05;
+    } else if (type === 'ruins') {
+        bgmOsc.type = 'triangle';
+        bgmOsc.frequency.value = 110;
+        lfo.frequency.value = 0.3;
+        lfoGain.gain.value = 15;
+        bgmGain.gain.value = 0.04;
+    }
+
+    lfo.connect(lfoGain);
+    lfoGain.connect(bgmOsc.frequency);
+    bgmOsc.connect(bgmGain);
+    lfo.start();
+    bgmOsc.start();
+}
+
+function stopBGM() {
+    if (bgmOsc) { try { bgmOsc.stop(); } catch (e) {} bgmOsc = null; }
+    gameState.bgmType = null;
+    if (bgmGain) bgmGain.gain.value = 0.08;
+}
+
+function playSFX(type) {
+    if (!audioCtx || !gameState.soundOn) return;
+    resumeAudio();
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    gain.connect(audioCtx.destination);
+    osc.connect(gain);
+
+    if (type === 'attack') {
+        osc.type = 'sawtooth'; osc.frequency.value = 300;
+        gain.gain.setValueAtTime(0.15, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.15);
+        osc.start(); osc.stop(audioCtx.currentTime + 0.15);
+    } else if (type === 'hit') {
+        osc.type = 'square'; osc.frequency.value = 150;
+        gain.gain.setValueAtTime(0.12, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.2);
+        osc.start(); osc.stop(audioCtx.currentTime + 0.2);
+    } else if (type === 'kill') {
+        osc.type = 'sine'; osc.frequency.value = 500;
+        osc.frequency.exponentialRampToValueAtTime(800, audioCtx.currentTime + 0.3);
+        gain.gain.setValueAtTime(0.15, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.4);
+        osc.start(); osc.stop(audioCtx.currentTime + 0.4);
+    } else if (type === 'levelup') {
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(400, audioCtx.currentTime);
+        osc.frequency.setValueAtTime(500, audioCtx.currentTime + 0.15);
+        osc.frequency.setValueAtTime(600, audioCtx.currentTime + 0.3);
+        osc.frequency.setValueAtTime(800, audioCtx.currentTime + 0.45);
+        gain.gain.setValueAtTime(0.2, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.6);
+        osc.start(); osc.stop(audioCtx.currentTime + 0.6);
+    } else if (type === 'coin') {
+        osc.type = 'sine'; osc.frequency.value = 1200;
+        gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.1);
+        osc.start(); osc.stop(audioCtx.currentTime + 0.1);
+    }
+}
+
+function toggleSound() {
+    gameState.soundOn = !gameState.soundOn;
+    const btn = document.getElementById('sound-btn');
+    if (btn) btn.textContent = gameState.soundOn ? '🔊' : '🔇';
+    if (!gameState.soundOn) stopBGM();
+}
+
+// ==================== PARTY / CO-OP ====================
+function updatePartyDisplay() {
+    const partyDiv = document.getElementById('party-display');
+    if (!partyDiv) return;
+    let html = '';
+    let nearbyCount = 0;
+    for (const [name, om] of Object.entries(onlineModels)) {
+        if (!om.group.visible) continue;
+        const dist = playerBody.position.distanceTo(om.group.position);
+        if (dist < 20) {
+            nearbyCount++;
+            const info = onlinePlayers[name];
+            const hp = info ? info.hp : '?';
+            const maxHp = info ? info.maxHp : '?';
+            const lv = info ? (info.level || 1) : '?';
+            const pct = info ? Math.max(0, (info.hp / info.maxHp) * 100) : 100;
+            html += `<div class="party-member"><span class="party-name">Lv.${lv} ${name}</span><div class="party-hp-bg"><div class="party-hp-bar" style="width:${pct}%"></div></div></div>`;
+        }
+    }
+    if (nearbyCount > 0) {
+        partyDiv.style.display = 'block';
+        partyDiv.innerHTML = '<div class="party-title">근처 파티원</div>' + html;
+    } else {
+        partyDiv.style.display = 'none';
+    }
+}
+
+// ==================== EXTENDED INTERACTIONS ====================
+function handleDoorInteraction(door) {
+    if (door.userData.name === 'castleDoor') {
+        door.userData.isOpen = true;
+        door.visible = false;
+        showInvestigationText('성문이 열렸습니다.');
+    } else if (door.userData.name === 'mineDoor') {
+        if (gameState.stage2Phase >= 1) {
+            door.userData.isOpen = true;
+            door.visible = false;
+            showInvestigationText('철문이 천천히 열렸습니다.');
+        } else {
+            showInvestigationText('아직 갈 이유가 없다.');
+        }
+    } else if (door.userData.name === 'ruinsEntrance') {
+        if (gameState.stage3Phase >= 1) {
+            enterRuins();
+        } else {
+            showInvestigationText('고대의 현자에게 먼저 이야기를 들어보자.');
+        }
+    }
+}
+
 // Shake animation
 const shakeStyle = document.createElement('style');
 shakeStyle.textContent = `@keyframes shake { 0%,100%{transform:translate(0,0)} 10%{transform:translate(-5px,3px)} 20%{transform:translate(5px,-3px)} 30%{transform:translate(-3px,5px)} 40%{transform:translate(3px,-5px)} 50%{transform:translate(-5px,3px)} 60%{transform:translate(5px,-3px)} 70%{transform:translate(-3px,5px)} 80%{transform:translate(3px,-5px)} 90%{transform:translate(-5px,3px)} }`;
 document.head.appendChild(shakeStyle);
+
+document.addEventListener('click', resumeAudio, { once: true });
+document.addEventListener('keydown', resumeAudio, { once: true });
+
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && document.getElementById('chat-panel').style.display === 'flex') {
+        e.preventDefault();
+        sendChatMessage();
+    }
+});

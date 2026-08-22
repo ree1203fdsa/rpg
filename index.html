@@ -46,9 +46,14 @@
         <div id="hud">
             <div id="player-info">
                 <div id="player-name-display"></div>
+                <div id="level-display">Lv.1</div>
                 <div id="health-bar-container">
                     <div id="health-bar"></div>
                     <span id="health-text">100 / 100</span>
+                </div>
+                <div id="xp-bar-container">
+                    <div id="xp-bar"></div>
+                    <span id="xp-text">0 / 50</span>
                 </div>
                 <div id="currency-display">
                     <span id="coin-display">코인: 0</span>
@@ -168,8 +173,12 @@
         <!-- Menu Buttons -->
         <div id="menu-buttons">
             <button onclick="toggleInventory()">인벤토리 (I)</button>
+            <button onclick="toggleEquipment()">장비 (E)</button>
             <button onclick="toggleShop()">상점 (P)</button>
             <button onclick="toggleRoulette()">룰렛 (R)</button>
+            <button onclick="toggleRanking()">랭킹 (L)</button>
+            <button onclick="toggleChat()">채팅 (T)</button>
+            <button id="sound-btn" onclick="toggleSound()">🔊</button>
             <button id="admin-menu-btn" onclick="toggleAdmin()" style="display:none;">관리자 (~)</button>
         </div>
 
@@ -255,6 +264,40 @@
                 <div id="admin-super-msg"></div>
             </div>
         </div>
+
+        <!-- Equipment Screen -->
+        <div id="equipment-screen" style="display:none;">
+            <div class="equip-header">
+                <h2>장비</h2>
+                <button onclick="toggleEquipment()">X</button>
+            </div>
+            <div id="equip-slots"></div>
+            <div id="equip-stats"></div>
+        </div>
+
+        <!-- Ranking Screen -->
+        <div id="ranking-screen" style="display:none;">
+            <div class="ranking-header">
+                <h2>랭킹</h2>
+                <button onclick="toggleRanking()">X</button>
+            </div>
+            <div id="ranking-list"></div>
+        </div>
+
+        <!-- Chat Panel -->
+        <div id="chat-panel" style="display:none;">
+            <div id="chat-messages"></div>
+            <div id="chat-input-row">
+                <input type="text" id="chat-input" placeholder="메시지 입력..." maxlength="100" autocomplete="off">
+                <button onclick="sendChatMessage()">전송</button>
+            </div>
+        </div>
+
+        <!-- Minimap -->
+        <canvas id="minimap-canvas" width="150" height="150"></canvas>
+
+        <!-- Party Display -->
+        <div id="party-display" style="display:none;"></div>
 
         <!-- Crosshair -->
         <div id="crosshair">+</div>
