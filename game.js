@@ -56,6 +56,18 @@ window.toggleRanking = toggleRanking;
 window.toggleSound = toggleSound;
 window.equipFromInventory = equipFromInventory;
 window.unequipSlot = unequipSlot;
+window.toggleQuestBoard = toggleQuestBoard;
+window.acceptSideQuest = acceptSideQuest;
+window.toggleCrafting = toggleCrafting;
+window.craftItem = craftItem;
+window.toggleAchievements = toggleAchievements;
+window.toggleSkillTree = toggleSkillTree;
+window.upgradeSkill = upgradeSkill;
+window.startFishing = startFishing;
+window.catchFish = catchFish;
+window.togglePetPanel = togglePetPanel;
+window.summonPet = summonPet;
+window.challengePvP = challengePvP;
 
 let currentPlayer = null;
 let godMode = false;
@@ -99,7 +111,24 @@ let gameState = {
     defense: 0, attackBonus: 0,
     kills: 0, stage3Phase: 0,
     insideRuins: false, tabletsFound: 0,
-    soundOn: true, bgmType: null
+    soundOn: true, bgmType: null,
+    // Side quests
+    sideQuests: [], activeSideQuest: null, completedSideQuests: [],
+    // Day/Night & Weather
+    timeOfDay: 0, daySpeed: 0.001, weather: 'clear',
+    // Pet
+    pet: null, petModel: null,
+    // Crafting
+    materials: {},
+    // PvP
+    pvpTarget: null, pvpActive: false,
+    // Achievements
+    achievements: [], title: '',
+    // Fishing
+    fishing: false, fishingSpot: false,
+    // Skills
+    skillPoints: 0,
+    skills: { vitality: 0, strength: 0, agility: 0, luck: 0, critical: 0 }
 };
 
 // ==================== ASSET LOADER ====================
@@ -289,6 +318,13 @@ async function startGame() {
     gameState.kills = currentPlayer.kills || 0;
     gameState.defense = currentPlayer.defense || 0;
     gameState.attackBonus = currentPlayer.attackBonus || 0;
+    gameState.skillPoints = currentPlayer.skillPoints || 0;
+    if (currentPlayer.skills) gameState.skills = currentPlayer.skills;
+    if (currentPlayer.achievements) gameState.achievements = currentPlayer.achievements;
+    gameState.title = currentPlayer.title || '';
+    if (currentPlayer.materials) gameState.materials = currentPlayer.materials;
+    if (currentPlayer.completedSideQuests) gameState.completedSideQuests = currentPlayer.completedSideQuests;
+    if (currentPlayer.pet) gameState.pet = currentPlayer.pet;
     if (currentPlayer.equipment) {
         gameState.equipment = currentPlayer.equipment;
         if (gameState.equipment.weapon) gameState.equippedWeapon = gameState.equipment.weapon;
@@ -542,6 +578,8 @@ async function buildWorld() {
 
     // === MINE INTERIOR ===
     buildMineInterior();
+    buildFishingSpot();
+    buildGatheringSpots();
 
     await Promise.allSettled(tasks);
 }
@@ -654,6 +692,11 @@ function setupControls() {
         if (e.code === 'KeyE') toggleEquipment();
         if (e.code === 'KeyT') toggleChat();
         if (e.code === 'KeyL') toggleRanking();
+        if (e.code === 'KeyK') toggleSkillTree();
+        if (e.code === 'KeyJ') toggleQuestBoard();
+        if (e.code === 'KeyC') toggleCrafting();
+        if (e.code === 'KeyH') toggleAchievements();
+        if (e.code === 'KeyG') togglePetPanel();
         if (e.code === 'Backquote') toggleAdmin();
     });
     document.addEventListener('keyup', (e) => { keys[e.code] = false; });
@@ -743,6 +786,10 @@ function gameLoop() {
     checkSnakeArea();
     updateOnlineLabels();
     updatePartyDisplay();
+    updateDayNight(delta);
+    updateWeather(delta);
+    updatePet(delta);
+    updateFishing();
     renderer.render(scene, camera);
     drawMinimap();
 }
@@ -1065,7 +1112,9 @@ function attackEnemy() {
         showInvestigationText('너무 멀다!'); return;
     }
     const baseDmg = randomInt(gameState.equippedWeapon.minDmg, gameState.equippedWeapon.maxDmg);
-    const dmg = baseDmg + gameState.attackBonus;
+    let dmg = baseDmg + gameState.attackBonus + gameState.skills.strength;
+    const critChance = 0.05 + gameState.skills.critical * 0.03;
+    if (Math.random() < critChance) { dmg = Math.floor(dmg * 2); showInvestigationText('크리티컬!'); }
     enemy.userData.hp -= dmg;
     playSFX('attack');
     showDamageNumber(dmg, enemy.position);
@@ -1088,6 +1137,9 @@ function onEnemyDeath(enemy) {
     gameState.kills++;
     if (isMobile) document.getElementById('mobile-attack-btn').style.display = 'none';
     playSFX('kill');
+    dropMaterials(enemy.userData.name);
+    checkAchievements();
+    updateSideQuestProgress('kill', enemy.userData.name);
 
     if (enemy.userData.name === '독사') {
         gainXP(20);
@@ -1203,6 +1255,18 @@ function handleInteraction() {
     else if (data.type === 'trace' && !data.investigated) {
         data.investigated = true; gameState.mineTracesFound++;
         showInvestigationText(data.text);
+    }
+    else if (data.type === 'gather') {
+        if (data.gathered) { showInvestigationText('이미 채집했습니다. 잠시 후 다시 시도하세요.'); return; }
+        const mat = data.material;
+        const amt = 1 + Math.floor(Math.random() * 2);
+        gameState.materials[mat] = (gameState.materials[mat] || 0) + amt;
+        showItemNotification(mat + ' x' + amt + ' 획득!');
+        updateSideQuestProgress('collect', mat);
+        data.gathered = true;
+        gameState.interactTarget.visible = false;
+        setTimeout(() => { data.gathered = false; gameState.interactTarget.visible = true; }, 15000);
+        saveGameData();
     }
 }
 
@@ -1460,7 +1524,9 @@ function startCombat(enemy) {
 
 function damagePlayer(dmg) {
     if (godMode) return;
-    const totalDef = gameState.defense + (gameState.equipment.armor ? gameState.equipment.armor.defense || 0 : 0) + (gameState.equipment.accessory ? gameState.equipment.accessory.defense || 0 : 0);
+    const dodgeChance = gameState.skills.agility * 0.03;
+    if (Math.random() < dodgeChance) { showInvestigationText('회피!'); return; }
+    const totalDef = gameState.defense + (gameState.equipment.armor ? gameState.equipment.armor.defense || 0 : 0) + (gameState.equipment.accessory ? gameState.equipment.accessory.defense || 0 : 0) + Math.floor(gameState.skills.vitality * 0.5);
     dmg = Math.max(1, dmg - totalDef);
     gameState.playerHp -= dmg;
     playSFX('hit');
@@ -1820,7 +1886,14 @@ async function saveGameData() {
         currentStage: gameState.stage, completedQuests: gameState.completedQuests, deaths: gameState.snakeDeaths,
         level: gameState.level, xp: gameState.xp, kills: gameState.kills,
         defense: gameState.defense, attackBonus: gameState.attackBonus,
-        equipment: gameState.equipment
+        equipment: gameState.equipment,
+        skillPoints: gameState.skillPoints,
+        skills: gameState.skills,
+        achievements: gameState.achievements,
+        title: gameState.title,
+        materials: gameState.materials,
+        completedSideQuests: gameState.completedSideQuests,
+        pet: gameState.pet
     };
     if (currentPlayer.resetOnLogin) data.resetOnLogin = true;
     gameState.inventory.forEach((item, i) => { data.inventory['slot_' + i] = item; });
@@ -2176,6 +2249,7 @@ function gainXP(amount) {
         gameState.playerMaxHp += 10;
         gameState.playerHp = gameState.playerMaxHp;
         gameState.attackBonus += 1;
+        gameState.skillPoints += 2;
         playSFX('levelup');
         showStageComplete('LEVEL UP! Lv.' + gameState.level, 2000);
     }
@@ -2779,6 +2853,527 @@ function handleDoorInteraction(door) {
             showInvestigationText('고대의 현자에게 먼저 이야기를 들어보자.');
         }
     }
+}
+
+// ==================== SIDE QUEST SYSTEM ====================
+const sideQuestPool = [
+    { id: 'sq_kill3snakes', name: '독사 사냥꾼', desc: '독사 3마리를 처치하세요.', type: 'kill', target: '독사', needed: 3, progress: 0, reward: { coins: 50, xp: 40 } },
+    { id: 'sq_kill5snakes', name: '독사 토벌', desc: '독사 5마리를 처치하세요.', type: 'kill', target: '독사', needed: 5, progress: 0, reward: { coins: 100, xp: 80 } },
+    { id: 'sq_collect_wood', name: '나무 수집', desc: '나무 재료 5개를 모으세요.', type: 'collect', target: '나무', needed: 5, progress: 0, reward: { coins: 40, xp: 30 } },
+    { id: 'sq_collect_stone', name: '돌 수집', desc: '돌 재료 5개를 모으세요.', type: 'collect', target: '돌', needed: 5, progress: 0, reward: { coins: 40, xp: 30 } },
+    { id: 'sq_collect_iron', name: '철 수집', desc: '철 재료 3개를 모으세요.', type: 'collect', target: '철', needed: 3, progress: 0, reward: { coins: 80, xp: 50 } },
+    { id: 'sq_fish3', name: '낚시 초보', desc: '물고기 3마리를 잡으세요.', type: 'collect', target: '물고기', needed: 3, progress: 0, reward: { coins: 60, xp: 40 } },
+];
+
+function toggleQuestBoard() {
+    const el = document.getElementById('quest-board');
+    const isOpen = el.style.display !== 'none';
+    el.style.display = isOpen ? 'none' : 'block';
+    if (!isOpen) renderQuestBoard();
+}
+
+function renderQuestBoard() {
+    const container = document.getElementById('quest-list');
+    if (!container) return;
+    container.innerHTML = '';
+    if (gameState.activeSideQuest) {
+        const q = gameState.activeSideQuest;
+        const div = document.createElement('div');
+        div.className = 'quest-card active';
+        div.innerHTML = `<div class="quest-name">${q.name} (진행중)</div><div class="quest-desc">${q.desc}</div><div class="quest-progress">진행: ${q.progress}/${q.needed}</div><div class="quest-reward">보상: ${q.reward.coins}코인, ${q.reward.xp}XP</div>`;
+        container.appendChild(div);
+    }
+    const available = sideQuestPool.filter(q => !gameState.completedSideQuests.includes(q.id) && (!gameState.activeSideQuest || gameState.activeSideQuest.id !== q.id));
+    available.forEach((q, i) => {
+        const div = document.createElement('div');
+        div.className = 'quest-card';
+        div.innerHTML = `<div class="quest-name">${q.name}</div><div class="quest-desc">${q.desc}</div><div class="quest-reward">보상: ${q.reward.coins}코인, ${q.reward.xp}XP</div><button onclick="acceptSideQuest('${q.id}')">수락</button>`;
+        container.appendChild(div);
+    });
+    if (available.length === 0 && !gameState.activeSideQuest) {
+        container.innerHTML = '<div style="color:#94a3b8;text-align:center;">사용 가능한 퀘스트가 없습니다.</div>';
+    }
+}
+
+function acceptSideQuest(id) {
+    if (gameState.activeSideQuest) { showInvestigationText('이미 진행 중인 퀘스트가 있습니다!'); return; }
+    const q = sideQuestPool.find(sq => sq.id === id);
+    if (!q) return;
+    gameState.activeSideQuest = { ...q, progress: 0 };
+    if (q.type === 'collect') gameState.activeSideQuest.progress = gameState.materials[q.target] || 0;
+    showItemNotification('퀘스트 수락: ' + q.name);
+    renderQuestBoard();
+}
+
+function updateSideQuestProgress(type, target) {
+    const q = gameState.activeSideQuest;
+    if (!q) return;
+    if (q.type === 'kill' && type === 'kill' && q.target === target) {
+        q.progress++;
+        showInvestigationText(q.name + ': ' + q.progress + '/' + q.needed);
+    }
+    if (q.progress >= q.needed) completeSideQuest();
+}
+
+function completeSideQuest() {
+    const q = gameState.activeSideQuest;
+    if (!q) return;
+    addCoins(q.reward.coins);
+    gainXP(q.reward.xp);
+    gameState.completedSideQuests.push(q.id);
+    showItemNotification('퀘스트 완료: ' + q.name + '!');
+    gameState.activeSideQuest = null;
+    checkAchievements();
+    saveGameData();
+}
+
+// ==================== DAY/NIGHT SYSTEM ====================
+let dayNightLight = null;
+let weatherParticles = null;
+
+function updateDayNight(delta) {
+    if (!scene || gameState.insideMine || gameState.insideRuins) return;
+    gameState.timeOfDay += gameState.daySpeed * delta;
+    if (gameState.timeOfDay > 1) gameState.timeOfDay = 0;
+
+    const t = gameState.timeOfDay;
+    let skyR, skyG, skyB, lightIntensity;
+    if (t < 0.25) {
+        const f = t / 0.25;
+        skyR = 0.05 + f * 0.48; skyG = 0.05 + f * 0.76; skyB = 0.15 + f * 0.77; lightIntensity = 0.3 + f * 0.7;
+    } else if (t < 0.5) {
+        skyR = 0.53; skyG = 0.81; skyB = 0.92; lightIntensity = 1.0;
+    } else if (t < 0.75) {
+        const f = (t - 0.5) / 0.25;
+        skyR = 0.53 + f * 0.27; skyG = 0.81 - f * 0.51; skyB = 0.92 - f * 0.42; lightIntensity = 1.0 - f * 0.4;
+    } else {
+        const f = (t - 0.75) / 0.25;
+        skyR = 0.8 - f * 0.75; skyG = 0.3 - f * 0.25; skyB = 0.5 - f * 0.35; lightIntensity = 0.6 - f * 0.3;
+    }
+    scene.background = new THREE.Color(skyR, skyG, skyB);
+    scene.fog = new THREE.Fog(new THREE.Color(skyR, skyG, skyB), 60, 250);
+
+    const timeEl = document.getElementById('time-display');
+    if (timeEl) {
+        const hour = Math.floor(t * 24);
+        const min = Math.floor((t * 24 - hour) * 60);
+        const icon = (t > 0.25 && t < 0.75) ? '☀️' : '🌙';
+        timeEl.textContent = icon + ' ' + String(hour).padStart(2, '0') + ':' + String(min).padStart(2, '0');
+    }
+}
+
+// ==================== WEATHER SYSTEM ====================
+let rainDrops = [], snowFlakes = [];
+
+function updateWeather(delta) {
+    if (gameState.insideMine || gameState.insideRuins) return;
+    if (Math.random() < 0.0002) {
+        const weathers = ['clear', 'clear', 'clear', 'rain', 'snow'];
+        const newW = weathers[Math.floor(Math.random() * weathers.length)];
+        if (newW !== gameState.weather) {
+            gameState.weather = newW;
+            clearWeatherEffects();
+            if (newW === 'rain') createRain();
+            else if (newW === 'snow') createSnow();
+        }
+    }
+    if (gameState.weather === 'rain') {
+        rainDrops.forEach(drop => {
+            drop.position.y -= 30 * delta;
+            if (drop.position.y < 0) {
+                drop.position.y = 20;
+                drop.position.x = playerBody.position.x + (Math.random() - 0.5) * 40;
+                drop.position.z = playerBody.position.z + (Math.random() - 0.5) * 40;
+            }
+        });
+    } else if (gameState.weather === 'snow') {
+        snowFlakes.forEach(flake => {
+            flake.position.y -= 3 * delta;
+            flake.position.x += Math.sin(Date.now() * 0.001 + flake.userData.offset) * 0.5 * delta;
+            if (flake.position.y < 0) {
+                flake.position.y = 15;
+                flake.position.x = playerBody.position.x + (Math.random() - 0.5) * 30;
+                flake.position.z = playerBody.position.z + (Math.random() - 0.5) * 30;
+            }
+        });
+    }
+}
+
+function createRain() {
+    const mat = new THREE.MeshBasicMaterial({ color: 0x6699cc, transparent: true, opacity: 0.5 });
+    for (let i = 0; i < 100; i++) {
+        const drop = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.5, 0.03), mat);
+        drop.position.set(playerBody.position.x + (Math.random() - 0.5) * 40, Math.random() * 20, playerBody.position.z + (Math.random() - 0.5) * 40);
+        scene.add(drop); rainDrops.push(drop);
+    }
+}
+
+function createSnow() {
+    const mat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.8 });
+    for (let i = 0; i < 60; i++) {
+        const flake = new THREE.Mesh(new THREE.SphereGeometry(0.08, 4, 4), mat);
+        flake.position.set(playerBody.position.x + (Math.random() - 0.5) * 30, Math.random() * 15, playerBody.position.z + (Math.random() - 0.5) * 30);
+        flake.userData.offset = Math.random() * Math.PI * 2;
+        scene.add(flake); snowFlakes.push(flake);
+    }
+}
+
+function clearWeatherEffects() {
+    rainDrops.forEach(d => scene.remove(d)); rainDrops = [];
+    snowFlakes.forEach(f => scene.remove(f)); snowFlakes = [];
+}
+
+// ==================== PET SYSTEM ====================
+let petMesh = null;
+
+function togglePetPanel() {
+    const el = document.getElementById('pet-panel');
+    el.style.display = el.style.display === 'none' ? 'block' : 'none';
+    if (el.style.display === 'block') renderPetPanel();
+}
+
+function renderPetPanel() {
+    const container = document.getElementById('pet-content');
+    if (!container) return;
+    if (gameState.pet) {
+        container.innerHTML = `<div class="pet-info"><span class="pet-icon">${gameState.pet.icon}</span><span class="pet-name">${gameState.pet.name}</span></div><div class="pet-desc">타입: ${gameState.pet.type} | 공격력: ${gameState.pet.attack}</div><div class="pet-desc">상태: 활성</div>`;
+    } else {
+        const pets = [
+            { name: '꼬마 늑대', icon: '🐺', type: '전투', attack: 3, cost: 200 },
+            { name: '아기 드래곤', icon: '🐉', type: '전투', attack: 5, cost: 500 },
+            { name: '요정', icon: '🧚', type: '회복', attack: 1, cost: 300 },
+        ];
+        container.innerHTML = pets.map(p =>
+            `<div class="pet-option"><span>${p.icon} ${p.name}</span><span class="pet-desc">${p.type} | 공격: ${p.attack}</span><button onclick="summonPet('${p.name}','${p.icon}','${p.type}',${p.attack},${p.cost})">${p.cost} 코인</button></div>`
+        ).join('');
+    }
+}
+
+function summonPet(name, icon, type, attack, cost) {
+    if (gameState.coins < cost) { showInvestigationText('코인이 부족합니다!'); return; }
+    gameState.coins -= cost;
+    gameState.pet = { name, icon, type, attack };
+    updateHUD();
+    createPetModel();
+    showItemNotification(name + '을(를) 소환했습니다!');
+    renderPetPanel();
+    saveGameData();
+}
+
+function createPetModel() {
+    if (petMesh) { scene.remove(petMesh); petMesh = null; }
+    if (!gameState.pet) return;
+    const group = new THREE.Group();
+    const color = gameState.pet.type === '전투' ? 0x888888 : 0x88ddff;
+    const body = new THREE.Mesh(new THREE.SphereGeometry(0.3, 8, 8), new THREE.MeshLambertMaterial({ color }));
+    body.position.y = 0.3; body.castShadow = true; group.add(body);
+    const head = new THREE.Mesh(new THREE.SphereGeometry(0.2, 8, 8), new THREE.MeshLambertMaterial({ color }));
+    head.position.set(0, 0.6, -0.2); group.add(head);
+    for (const sx of [-0.12, 0.12]) {
+        const eye = new THREE.Mesh(new THREE.SphereGeometry(0.05, 6, 6), new THREE.MeshBasicMaterial({ color: 0x000000 }));
+        eye.position.set(sx, 0.65, -0.35); group.add(eye);
+    }
+    group.position.copy(playerBody.position);
+    group.position.y = gameState.insideMine ? -10 : (gameState.insideRuins ? -20 : 0);
+    scene.add(group);
+    petMesh = group;
+}
+
+function updatePet(delta) {
+    if (!petMesh || !gameState.pet) return;
+    const targetX = playerBody.position.x + Math.sin(Date.now() * 0.002) * 2;
+    const targetZ = playerBody.position.z + Math.cos(Date.now() * 0.002) * 2;
+    const groundY = gameState.insideMine ? -10 : (gameState.insideRuins ? -20 : 0);
+    petMesh.position.lerp(new THREE.Vector3(targetX, groundY + Math.sin(Date.now() * 0.005) * 0.2, targetZ), 0.05);
+    petMesh.rotation.y = Math.atan2(playerBody.position.x - petMesh.position.x, playerBody.position.z - petMesh.position.z);
+
+    if (gameState.pet.type === '전투' && gameState.inCombat) {
+        const enemy = enemies.find(e => e.userData.hp > 0 && petMesh.position.distanceTo(e.position) < 8);
+        if (enemy && Math.random() < 0.02) {
+            enemy.userData.hp -= gameState.pet.attack;
+            showDamageNumber(gameState.pet.attack, enemy.position);
+            updateEnemyHP(enemy);
+            if (enemy.userData.hp <= 0) onEnemyDeath(enemy);
+        }
+    } else if (gameState.pet.type === '회복' && gameState.playerHp < gameState.playerMaxHp && Math.random() < 0.005) {
+        gameState.playerHp = Math.min(gameState.playerMaxHp, gameState.playerHp + 2);
+        updateHUD();
+    }
+}
+
+// ==================== CRAFTING SYSTEM ====================
+const craftingRecipes = [
+    { name: '체력 물약', icon: '🧪', result: { name: '체력 물약', icon: '🧪', type: 'potion', heal: 40, desc: '체력을 40 회복합니다.' }, needs: { '약초': 3, '물': 1 } },
+    { name: '강화된 검', icon: '⚔️', result: { name: '강화된 검', icon: '⚔️', type: 'weapon', minDmg: 5, maxDmg: 12, slot: 'weapon', desc: '대미지 5~12' }, needs: { '철': 5, '나무': 3 } },
+    { name: '미스릴 갑옷', icon: '🛡️', result: { name: '미스릴 갑옷', icon: '🛡️', type: 'armor', defense: 8, slot: 'armor', desc: '방어력 +8' }, needs: { '철': 8, '돌': 5, '마법석': 2 } },
+    { name: '행운의 부적', icon: '🍀', result: { name: '행운의 부적', icon: '🍀', type: 'accessory', defense: 0, slot: 'accessory', desc: '행운 +5%', luckBonus: 5 }, needs: { '약초': 5, '마법석': 1 } },
+    { name: '낚싯대', icon: '🎣', result: { name: '낚싯대', icon: '🎣', type: 'tool', desc: '물고기를 잡을 수 있다.' }, needs: { '나무': 5, '철': 1 } },
+    { name: '폭탄', icon: '💣', result: { name: '폭탄', icon: '💣', type: 'consumable', desc: '적에게 50 대미지', damage: 50 }, needs: { '철': 2, '돌': 3 } },
+];
+
+function dropMaterials(enemyName) {
+    const drops = {
+        '독사': [['약초', 0.5], ['마법석', 0.1]],
+        '폐광의 그림자': [['마법석', 0.6], ['철', 0.4], ['돌', 0.5]],
+        '고대의 수호자': [['마법석', 0.8], ['철', 0.6], ['돌', 0.5]],
+    };
+    const list = drops[enemyName];
+    if (!list) return;
+    list.forEach(([mat, chance]) => {
+        const luckBonus = gameState.skills.luck * 0.02;
+        if (Math.random() < chance + luckBonus) {
+            gameState.materials[mat] = (gameState.materials[mat] || 0) + 1;
+            showInvestigationText(mat + ' 획득!');
+            updateSideQuestProgress('collect', mat);
+        }
+    });
+}
+
+function toggleCrafting() {
+    const el = document.getElementById('crafting-screen');
+    el.style.display = el.style.display === 'none' ? 'block' : 'none';
+    if (el.style.display === 'block') renderCrafting();
+}
+
+function renderCrafting() {
+    const container = document.getElementById('crafting-list');
+    if (!container) return;
+    container.innerHTML = '';
+    const matDiv = document.getElementById('materials-display');
+    if (matDiv) {
+        matDiv.innerHTML = '<strong>보유 재료:</strong> ' + (Object.keys(gameState.materials).length ? Object.entries(gameState.materials).map(([k, v]) => k + ':' + v).join(' | ') : '없음');
+    }
+    craftingRecipes.forEach((recipe, i) => {
+        const canCraft = Object.entries(recipe.needs).every(([mat, amt]) => (gameState.materials[mat] || 0) >= amt);
+        const div = document.createElement('div');
+        div.className = 'craft-card' + (canCraft ? ' craftable' : '');
+        div.innerHTML = `<div class="craft-name">${recipe.icon} ${recipe.name}</div><div class="craft-needs">${Object.entries(recipe.needs).map(([k, v]) => k + ' x' + v).join(', ')}</div><button ${canCraft ? '' : 'disabled'} onclick="craftItem(${i})">${canCraft ? '제작' : '재료 부족'}</button>`;
+        container.appendChild(div);
+    });
+}
+
+function craftItem(index) {
+    const recipe = craftingRecipes[index];
+    const canCraft = Object.entries(recipe.needs).every(([mat, amt]) => (gameState.materials[mat] || 0) >= amt);
+    if (!canCraft) return;
+    Object.entries(recipe.needs).forEach(([mat, amt]) => { gameState.materials[mat] -= amt; });
+    addToInventory({ ...recipe.result });
+    showItemNotification(recipe.name + ' 제작 완료!');
+    playSFX('coin');
+    if (!gameState.achievements.includes('crafted_once')) gameState.achievements.push('crafted_once');
+    renderCrafting();
+    checkAchievements();
+    saveGameData();
+}
+
+// ==================== PvP SYSTEM ====================
+function challengePvP() {
+    let nearest = null, minDist = 15;
+    for (const [name, om] of Object.entries(onlineModels)) {
+        if (!om.group.visible) continue;
+        const dist = playerBody.position.distanceTo(om.group.position);
+        if (dist < minDist) { minDist = dist; nearest = name; }
+    }
+    if (!nearest) { showInvestigationText('근처에 대결할 플레이어가 없습니다!'); return; }
+    showInvestigationText(nearest + '에게 결투 신청! (데모)');
+    dbSet('pvp/' + nearest, { challenger: currentPlayer.nickname, time: Date.now() });
+    showItemNotification(nearest + '에게 결투를 신청했습니다!');
+}
+
+// ==================== ACHIEVEMENT SYSTEM ====================
+const achievementList = [
+    { id: 'first_kill', name: '첫 처치', desc: '적을 처음 처치하세요.', icon: '⚔️', check: () => gameState.kills >= 1 },
+    { id: 'kill_10', name: '사냥꾼', desc: '적 10마리를 처치하세요.', icon: '🗡️', check: () => gameState.kills >= 10 },
+    { id: 'kill_50', name: '전설의 사냥꾼', desc: '적 50마리를 처치하세요.', icon: '🏆', check: () => gameState.kills >= 50 },
+    { id: 'lv5', name: '성장', desc: '레벨 5에 도달하세요.', icon: '⭐', check: () => gameState.level >= 5 },
+    { id: 'lv10', name: '베테랑', desc: '레벨 10에 도달하세요.', icon: '🌟', check: () => gameState.level >= 10 },
+    { id: 'rich', name: '부자', desc: '코인 1000개를 모으세요.', icon: '💰', check: () => gameState.coins >= 1000 },
+    { id: 'crafter', name: '장인', desc: '아이템을 처음 제작하세요.', icon: '🔨', check: () => gameState.achievements.includes('crafted_once') },
+    { id: 'fisher', name: '낚시꾼', desc: '물고기를 5마리 잡으세요.', icon: '🐟', check: () => (gameState.materials['물고기'] || 0) >= 5 },
+    { id: 'quest3', name: '모험가', desc: '사이드 퀘스트 3개를 완료하세요.', icon: '📜', check: () => gameState.completedSideQuests.length >= 3 },
+    { id: 'pet_owner', name: '동반자', desc: '펫을 소환하세요.', icon: '🐾', check: () => !!gameState.pet },
+    { id: 'stage2', name: '탐험가', desc: '스테이지 2를 클리어하세요.', icon: '🗺️', check: () => gameState.completedQuests.includes('stage2_complete') },
+    { id: 'stage3', name: '영웅', desc: '스테이지 3를 클리어하세요.', icon: '👑', check: () => gameState.completedQuests.includes('stage3_complete') },
+];
+
+function checkAchievements() {
+    let newAch = false;
+    achievementList.forEach(ach => {
+        if (gameState.achievements.includes(ach.id)) return;
+        if (ach.check()) {
+            gameState.achievements.push(ach.id);
+            showItemNotification('업적 달성: ' + ach.icon + ' ' + ach.name + '!');
+            playSFX('levelup');
+            newAch = true;
+        }
+    });
+    if (newAch) saveGameData();
+}
+
+function toggleAchievements() {
+    const el = document.getElementById('achievements-screen');
+    el.style.display = el.style.display === 'none' ? 'block' : 'none';
+    if (el.style.display === 'block') renderAchievements();
+}
+
+function renderAchievements() {
+    const container = document.getElementById('achievements-list');
+    if (!container) return;
+    container.innerHTML = '';
+    achievementList.forEach(ach => {
+        const done = gameState.achievements.includes(ach.id);
+        const div = document.createElement('div');
+        div.className = 'achievement-card' + (done ? ' done' : '');
+        div.innerHTML = `<span class="ach-icon">${ach.icon}</span><div class="ach-info"><div class="ach-name">${ach.name}</div><div class="ach-desc">${ach.desc}</div></div><span class="ach-status">${done ? '✅' : '❌'}</span>`;
+        container.appendChild(div);
+    });
+}
+
+// ==================== FISHING SYSTEM ====================
+let fishingTimer = null;
+let fishingPhase = 0;
+
+function startFishing() {
+    if (gameState.fishing) return;
+    const hasFishingRod = gameState.inventory.some(i => i && i.name === '낚싯대') || gameState.tools.includes('낚싯대');
+    if (!hasFishingRod) { showInvestigationText('낚싯대가 필요합니다! 제작해보세요.'); return; }
+    const fishSpot = playerBody.position.distanceTo(new THREE.Vector3(20, PLAYER_HEIGHT, 25)) < 10;
+    if (!fishSpot) { showInvestigationText('낚시할 수 있는 장소가 아닙니다! 마을 연못으로 가세요.'); return; }
+    gameState.fishing = true;
+    fishingPhase = 0;
+    document.getElementById('fishing-ui').style.display = 'block';
+    document.getElementById('fishing-status').textContent = '기다리는 중...';
+    document.getElementById('fishing-bar-fill').style.width = '0%';
+    const waitTime = 2000 + Math.random() * 3000;
+    fishingTimer = setTimeout(() => {
+        fishingPhase = 1;
+        document.getElementById('fishing-status').textContent = '물고기가 물었다! 빨리 클릭!';
+        document.getElementById('fishing-status').style.color = '#fbbf24';
+        playSFX('coin');
+        fishingTimer = setTimeout(() => {
+            if (fishingPhase === 1) {
+                fishingPhase = 0;
+                gameState.fishing = false;
+                document.getElementById('fishing-ui').style.display = 'none';
+                showInvestigationText('물고기가 도망갔습니다...');
+            }
+        }, 2000);
+    }, waitTime);
+}
+
+function updateFishing() {
+    if (!gameState.fishing) return;
+    if (fishingPhase === 1) {
+        const fill = document.getElementById('fishing-bar-fill');
+        if (fill) fill.style.width = (100 - ((Date.now() % 2000) / 2000 * 100)) + '%';
+    }
+}
+
+function catchFish() {
+    if (fishingPhase !== 1) return;
+    clearTimeout(fishingTimer);
+    fishingPhase = 0;
+    gameState.fishing = false;
+    document.getElementById('fishing-ui').style.display = 'none';
+    const fishTypes = [
+        { name: '붕어', value: 5 },
+        { name: '잉어', value: 10 },
+        { name: '금붕어', value: 30 },
+        { name: '전설의 물고기', value: 100 },
+    ];
+    const luckBonus = gameState.skills.luck * 0.02;
+    const roll = Math.random() + luckBonus;
+    const fish = roll > 0.95 ? fishTypes[3] : roll > 0.7 ? fishTypes[2] : roll > 0.4 ? fishTypes[1] : fishTypes[0];
+    gameState.materials['물고기'] = (gameState.materials['물고기'] || 0) + 1;
+    addCoins(fish.value);
+    showItemNotification(fish.name + '을(를) 잡았습니다! +' + fish.value + '코인');
+    playSFX('levelup');
+    updateSideQuestProgress('collect', '물고기');
+    checkAchievements();
+    saveGameData();
+}
+
+// ==================== SKILL TREE ====================
+const skillDefs = {
+    vitality: { name: '체력', desc: '방어력 +0.5/포인트', icon: '❤️', max: 20 },
+    strength: { name: '힘', desc: '공격력 +1/포인트', icon: '💪', max: 20 },
+    agility: { name: '민첩', desc: '회피율 +3%/포인트', icon: '🏃', max: 10 },
+    luck: { name: '행운', desc: '드롭율, 낚시 보너스 +2%/포인트', icon: '🍀', max: 10 },
+    critical: { name: '치명타', desc: '크리티컬 확률 +3%/포인트', icon: '⚡', max: 10 },
+};
+
+function toggleSkillTree() {
+    const el = document.getElementById('skill-tree');
+    el.style.display = el.style.display === 'none' ? 'block' : 'none';
+    if (el.style.display === 'block') renderSkillTree();
+}
+
+function renderSkillTree() {
+    const container = document.getElementById('skill-list');
+    if (!container) return;
+    container.innerHTML = '';
+    document.getElementById('skill-points-display').textContent = '스킬 포인트: ' + gameState.skillPoints;
+    Object.entries(skillDefs).forEach(([key, def]) => {
+        const lv = gameState.skills[key] || 0;
+        const div = document.createElement('div');
+        div.className = 'skill-row';
+        div.innerHTML = `<span class="skill-icon">${def.icon}</span><div class="skill-info"><div class="skill-name">${def.name} Lv.${lv}/${def.max}</div><div class="skill-desc">${def.desc}</div><div class="skill-bar-bg"><div class="skill-bar-fill" style="width:${(lv/def.max)*100}%"></div></div></div><button ${gameState.skillPoints > 0 && lv < def.max ? '' : 'disabled'} onclick="upgradeSkill('${key}')">+</button>`;
+        container.appendChild(div);
+    });
+}
+
+function upgradeSkill(key) {
+    if (gameState.skillPoints <= 0) return;
+    const def = skillDefs[key];
+    if ((gameState.skills[key] || 0) >= def.max) return;
+    gameState.skills[key] = (gameState.skills[key] || 0) + 1;
+    gameState.skillPoints--;
+    if (key === 'vitality') gameState.playerMaxHp += 5;
+    playSFX('coin');
+    renderSkillTree();
+    updateHUD();
+    saveGameData();
+}
+
+// ==================== FISHING SPOT IN WORLD ====================
+function buildFishingSpot() {
+    const water = new THREE.Mesh(
+        new THREE.CircleGeometry(6, 16),
+        new THREE.MeshLambertMaterial({ color: 0x2288cc, transparent: true, opacity: 0.7 })
+    );
+    water.rotation.x = -Math.PI / 2;
+    water.position.set(20, 0.05, 25);
+    scene.add(water);
+
+    const sign = new THREE.Mesh(new THREE.BoxGeometry(0.2, 1.5, 0.8), new THREE.MeshLambertMaterial({ color: 0x8B4513 }));
+    sign.position.set(15, 0.75, 22);
+    scene.add(sign);
+}
+
+// ==================== GATHERING SPOTS ====================
+function buildGatheringSpots() {
+    const spots = [
+        { pos: [-20, 0.3, -15], mat: '나무', color: 0x8B4513 },
+        { pos: [-15, 0.3, 20], mat: '나무', color: 0x8B4513 },
+        { pos: [10, 0.3, -18], mat: '돌', color: 0x888888 },
+        { pos: [-25, 0.3, 5], mat: '돌', color: 0x888888 },
+        { pos: [5, 0.3, 15], mat: '약초', color: 0x44aa44 },
+        { pos: [-10, 0.3, 10], mat: '약초', color: 0x44aa44 },
+        { pos: [25, 0.3, 15], mat: '물', color: 0x4488cc },
+    ];
+    spots.forEach(s => {
+        const mesh = new THREE.Mesh(
+            s.mat === '나무' ? new THREE.CylinderGeometry(0.3, 0.4, 1.2, 6) :
+            s.mat === '돌' ? new THREE.DodecahedronGeometry(0.5) :
+            s.mat === '약초' ? new THREE.ConeGeometry(0.3, 0.8, 6) :
+            new THREE.SphereGeometry(0.4, 8, 8),
+            new THREE.MeshLambertMaterial({ color: s.color, emissive: 0x111111 })
+        );
+        mesh.position.set(s.pos[0], s.pos[1], s.pos[2]);
+        mesh.userData = { name: s.mat + ' 채집', type: 'gather', material: s.mat, gathered: false, respawnTime: 0 };
+        scene.add(mesh);
+        interactables.push(mesh);
+    });
 }
 
 // Shake animation

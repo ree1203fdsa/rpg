@@ -173,6 +173,11 @@
             <button onclick="toggleRoulette()">룰렛 (R)</button>
             <button onclick="toggleRanking()">랭킹 (L)</button>
             <button onclick="toggleChat()">채팅 (T)</button>
+            <button onclick="toggleSkillTree()">스킬 (K)</button>
+            <button onclick="toggleQuestBoard()">퀘스트 (J)</button>
+            <button onclick="toggleCrafting()">제작 (C)</button>
+            <button onclick="toggleAchievements()">업적 (H)</button>
+            <button onclick="togglePetPanel()">펫 (G)</button>
             <button id="sound-btn" onclick="toggleSound()">🔊</button>
             <button id="admin-menu-btn" onclick="toggleAdmin()" style="display:none;">관리자 (~)</button>
         </div>
@@ -293,6 +298,48 @@
 
         <!-- Party Display -->
         <div id="party-display" style="display:none;"></div>
+
+        <!-- Quest Board -->
+        <div id="quest-board" style="display:none;">
+            <div class="panel-header"><h2>퀘스트 게시판</h2><button onclick="toggleQuestBoard()">X</button></div>
+            <div id="quest-list"></div>
+        </div>
+
+        <!-- Crafting Screen -->
+        <div id="crafting-screen" style="display:none;">
+            <div class="panel-header"><h2>제작</h2><button onclick="toggleCrafting()">X</button></div>
+            <div id="materials-display"></div>
+            <div id="crafting-list"></div>
+        </div>
+
+        <!-- Achievements Screen -->
+        <div id="achievements-screen" style="display:none;">
+            <div class="panel-header"><h2>업적</h2><button onclick="toggleAchievements()">X</button></div>
+            <div id="achievements-list"></div>
+        </div>
+
+        <!-- Skill Tree -->
+        <div id="skill-tree" style="display:none;">
+            <div class="panel-header"><h2>스킬 트리</h2><button onclick="toggleSkillTree()">X</button></div>
+            <div id="skill-points-display"></div>
+            <div id="skill-list"></div>
+        </div>
+
+        <!-- Fishing UI -->
+        <div id="fishing-ui" style="display:none;">
+            <div id="fishing-status">기다리는 중...</div>
+            <div id="fishing-bar"><div id="fishing-bar-fill"></div></div>
+            <button onclick="catchFish()">잡기!</button>
+        </div>
+
+        <!-- Pet Panel -->
+        <div id="pet-panel" style="display:none;">
+            <div class="panel-header"><h2>펫</h2><button onclick="togglePetPanel()">X</button></div>
+            <div id="pet-content"></div>
+        </div>
+
+        <!-- Time Display -->
+        <div id="time-display"></div>
 
         <!-- Crosshair -->
         <div id="crosshair">+</div>
