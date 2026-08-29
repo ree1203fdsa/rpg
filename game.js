@@ -2790,78 +2790,35 @@ function handleSageDialogue() {
 
 // ==================== SOUND SYSTEM ====================
 let audioCtx = null;
-let bgmGain = null;
-let bgmOsc = null;
+let bgmAudio = null;
 
 function initAudio() {
     try {
         audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-        bgmGain = audioCtx.createGain();
-        bgmGain.gain.value = 0.08;
-        bgmGain.connect(audioCtx.destination);
     } catch (e) {}
+    bgmAudio = new Audio('assets/audio/bgm.mp3');
+    bgmAudio.loop = true;
+    bgmAudio.volume = 0.3;
 }
 
 function resumeAudio() {
     if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+    if (bgmAudio && bgmAudio.paused && gameState.soundOn) {
+        bgmAudio.play().catch(() => {});
+    }
 }
 
 function playBGM(type) {
-    if (!audioCtx || !gameState.soundOn || gameState.bgmType === type) return;
-    stopBGM();
+    if (!gameState.soundOn) { stopBGM(); return; }
+    if (gameState.bgmType === type) return;
     gameState.bgmType = type;
-    bgmOsc = audioCtx.createOscillator();
-    const lfo = audioCtx.createOscillator();
-    const lfoGain = audioCtx.createGain();
-
-    if (type === 'village') {
-        bgmOsc.type = 'sine';
-        bgmOsc.frequency.value = 220;
-        lfo.frequency.value = 0.5;
-        lfoGain.gain.value = 20;
-    } else if (type === 'mine') {
-        bgmOsc.type = 'sawtooth';
-        bgmOsc.frequency.value = 80;
-        lfo.frequency.value = 0.2;
-        lfoGain.gain.value = 10;
-        bgmGain.gain.value = 0.03;
-    } else if (type === 'battle') {
-        bgmOsc.type = 'square';
-        bgmOsc.frequency.value = 150;
-        lfo.frequency.value = 4;
-        lfoGain.gain.value = 30;
-        bgmGain.gain.value = 0.05;
-    } else if (type === 'ruins') {
-        bgmOsc.type = 'triangle';
-        bgmOsc.frequency.value = 110;
-        lfo.frequency.value = 0.3;
-        lfoGain.gain.value = 15;
-        bgmGain.gain.value = 0.04;
-    } else if (type === 'ice') {
-        bgmOsc.type = 'sine';
-        bgmOsc.frequency.value = 330;
-        lfo.frequency.value = 0.15;
-        lfoGain.gain.value = 25;
-        bgmGain.gain.value = 0.04;
-    } else if (type === 'icecave') {
-        bgmOsc.type = 'triangle';
-        bgmOsc.frequency.value = 165;
-        lfo.frequency.value = 0.1;
-        lfoGain.gain.value = 10;
-        bgmGain.gain.value = 0.03;
-    }
-
-    lfo.connect(lfoGain);
-    lfoGain.connect(bgmOsc.frequency);
-    bgmOsc.connect(bgmGain);
-    lfo.start();
-    bgmOsc.start();
+    if (!bgmAudio) return;
+    if (bgmAudio.paused) bgmAudio.play().catch(() => {});
 }
 
 function stopBGM() {
-    if (bgmOsc) { try { bgmOsc.stop(); } catch (e) {} bgmOsc = null; }
+    if (bgmAudio && !bgmAudio.paused) bgmAudio.pause();
     gameState.bgmType = null;
-    if (bgmGain) bgmGain.gain.value = 0.08;
 }
 
 function playSFX(type) {
@@ -2909,7 +2866,12 @@ function toggleSound() {
     gameState.soundOn = !gameState.soundOn;
     const btn = document.getElementById('sound-btn');
     if (btn) btn.textContent = gameState.soundOn ? '🔊' : '🔇';
-    if (!gameState.soundOn) stopBGM();
+    if (!gameState.soundOn) {
+        stopBGM();
+    } else {
+        gameState.bgmType = null;
+        if (bgmAudio) bgmAudio.play().catch(() => {});
+    }
 }
 
 // ==================== PARTY / CO-OP ====================
