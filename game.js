@@ -128,7 +128,11 @@ let gameState = {
     fishing: false, fishingSpot: false,
     // Skills
     skillPoints: 0,
-    skills: { vitality: 0, strength: 0, agility: 0, luck: 0, critical: 0 }
+    skills: { vitality: 0, strength: 0, agility: 0, luck: 0, critical: 0 },
+    // Stage 4
+    stage4Phase: 0, insideIceCave: false, iceTracesFound: 0,
+    babyDragonFollowing: false, iceWolvesDefeated: false,
+    babyDragonDelivered: false, enteredIceBiome: false, heardDragonCry: false
 };
 
 // ==================== ASSET LOADER ====================
@@ -348,6 +352,7 @@ async function startGame() {
         startStage1();
     } else if (!gameState.completedQuests.includes('stage2_complete')) {
         startStage2();
+    } else if (!gameState.completedQuests.includes('stage4_complete')) {
     } else {
         showStageComplete('게임 클리어!', 3000);
     }
@@ -360,6 +365,9 @@ async function startGame() {
     initAudio();
     if (gameState.stage === 3 && !gameState.completedQuests.includes('stage3_complete')) {
         startStage3();
+    }
+    if (gameState.stage === 4 && !gameState.completedQuests.includes('stage4_complete')) {
+        startStage4();
     }
     gameLoop();
 }
@@ -784,6 +792,8 @@ function gameLoop() {
     updateArrow();
     updateMineEffects();
     checkSnakeArea();
+    checkIceBiomeArea();
+    updateBabyDragon(delta);
     updateOnlineLabels();
     updatePartyDisplay();
     updateDayNight(delta);
@@ -827,11 +837,13 @@ function updatePlayer(delta) {
         }
     }
 
-    playerBody.position.y = gameState.insideMine ? -10 + PLAYER_HEIGHT : (gameState.insideRuins ? -20 + PLAYER_HEIGHT : PLAYER_HEIGHT);
+    playerBody.position.y = gameState.insideMine ? -10 + PLAYER_HEIGHT : (gameState.insideRuins ? -20 + PLAYER_HEIGHT : (gameState.insideIceCave ? -30 + PLAYER_HEIGHT : PLAYER_HEIGHT));
 
     if (gameState.insideMine) playBGM('mine');
     else if (gameState.insideRuins) playBGM('ruins');
+    else if (gameState.insideIceCave) playBGM('icecave');
     else if (gameState.inCombat) playBGM('battle');
+    else if (playerBody && playerBody.position.z < -80) playBGM('ice');
     else playBGM('village');
     playerBody.position.x = Math.max(-140, Math.min(140, playerBody.position.x));
     playerBody.position.z = Math.max(-140, Math.min(140, playerBody.position.z));
@@ -861,6 +873,10 @@ function checkCollisions() {
         } else if (Math.abs(px - (-30)) < 1.5 && Math.abs(pz - (-56)) < 1) {
             enterMine();
         }
+    }
+    // Ice cave exit: player goes back toward entrance
+    if (gameState.insideIceCave && playerBody.position.z > -132) {
+        exitIceCave();
     }
     if (gameState.insideMine && gameState.mineCollapsed && mineObjects.collapseRocks && mineObjects.collapseRocks.visible) {
         const rp = mineObjects.collapseRocks.position;
@@ -1090,6 +1106,24 @@ function updateEnemies(delta) {
                 damagePlayer(randomInt(3, 7));
                 showInvestigationText('고대의 파동!');
             }
+        } else if (data.name === '얼음 늑대') {
+            data.attackCooldown -= delta;
+            enemy.position.y = (gameState.insideIceCave ? -30 : 0) + Math.sin(Date.now() * 0.004) * 0.1;
+            if (dist < 15 && dist > 2) {
+                const speed = (data.attackCooldown <= -1) ? 8 : 4;
+                const mv = dir.normalize().multiplyScalar(speed * delta);
+                enemy.position.x += mv.x; enemy.position.z += mv.z;
+            }
+            if (data.attackCooldown <= 0 && dist < 4) {
+                const isCharge = Math.random() < 0.3;
+                const dmg = isCharge ? randomInt(3, 6) : randomInt(2, 5);
+                damagePlayer(dmg);
+                if (isCharge) {
+                    showInvestigationText('얼음 돌진!');
+                    spawnProjectile(enemy.position.clone(), 0x66ccff);
+                }
+                data.attackCooldown = data.attackInterval;
+            }
         }
     });
 }
@@ -1173,6 +1207,9 @@ function onEnemyDeath(enemy) {
             setArrowTarget(new THREE.Vector3(-5, 0, 8));
             if (gameState.insideRuins) exitRuins();
         }, 2000);
+    } else if (enemy.userData.name === '얼음 늑대') {
+        gainXP(40);
+        addCoins(15);
     }
     saveGameData();
 }
@@ -1256,6 +1293,29 @@ function handleInteraction() {
         data.investigated = true; gameState.mineTracesFound++;
         showInvestigationText(data.text);
     }
+    else if (data.type === 'iceTrace' && !data.investigated) {
+        data.investigated = true; gameState.iceTracesFound++;
+        showInvestigationText(data.text);
+        showItemNotification('흔적 발견! (' + gameState.iceTracesFound + '/4)');
+        if (gameState.iceTracesFound >= 4) {
+            setTimeout(() => {
+                gameState.quest = 'find_nest';
+                showQuest('아이스 드래곤의 둥지 찾기');
+                setArrowTarget(new THREE.Vector3(0, 1, -170));
+                showInvestigationText('모든 흔적을 조사했다. 드래곤의 둥지가 가까이 있을 것이다!');
+            }, 1500);
+        }
+    }
+    else if (data.type === 'iceCaveEntrance') {
+        enterIceCave();
+    }
+    else if (data.type === 'babyDragon' && !gameState.babyDragonFollowing) {
+        gameState.babyDragonFollowing = true;
+        showInvestigationText('아이스 드래곤 새끼가 당신을 바라봅니다...');
+        gameState.quest = 'take_dragon';
+        showQuest('아이스 드래곤 새끼 데려가기');
+        playSFX('levelup');
+    }
     else if (data.type === 'gather') {
         if (data.gathered) { showInvestigationText('이미 채집했습니다. 잠시 후 다시 시도하세요.'); return; }
         const mat = data.material;
@@ -1287,6 +1347,38 @@ function handleChiefDialogue() {
                 showStageComplete('1 STAGE CLEAR!', 3000);
                 setTimeout(() => startStage2(), 4000);
             }, 2000);
+        });
+    } else if (gameState.stage === 4 && gameState.quest === 'talk_chief_s4') {
+        startDialogue('마을 이장', [
+            '이번에는 아주 중요한 부탁이 있단다.',
+            '북쪽에 있는 얼음 바이옴에 아이스 드래곤이 살고 있단다.',
+            '그곳에서 아이스 드래곤의 새끼를 찾아서 이곳으로 데려와 주렴.'
+        ], () => {
+            gameState.quest = 'go_ice_biome';
+            showQuest('얼음 바이옴으로 가기');
+            setArrowTarget(new THREE.Vector3(0, 1, -120));
+        });
+    } else if (gameState.stage === 4 && gameState.quest === 'deliver_dragon') {
+        startDialogue('마을 이장', [
+            '정말 아이스 드래곤의 새끼를 데려왔구나!',
+            '정말 수고가 많았다. 이 아이는 내가 잘 보호하도록 하마.'
+        ], () => {
+            if (babyDragonMesh) {
+                const chiefPos = new THREE.Vector3(30, 0, 0);
+                babyDragonMesh.position.lerp(chiefPos, 1);
+                setTimeout(() => { scene.remove(babyDragonMesh); babyDragonMesh = null; }, 2000);
+            }
+            gameState.babyDragonFollowing = false;
+            gameState.babyDragonDelivered = true;
+            addCoins(150); addDiamonds(10);
+            const iceCrystal = { name: '얼음 결정', icon: '💎', type: 'special', desc: '아이스 드래곤의 둥지에서 가져온 신비한 결정.' };
+            addToInventory(iceCrystal);
+            showItemNotification('4스테이지 완료! 코인 +150, 다이아몬드 +10, 얼음 결정 획득!');
+            gameState.completedQuests.push('stage4_complete');
+            gameState.quest = null; clearArrow();
+            setTimeout(() => showStageComplete('4 STAGE CLEAR!', 5000), 2000);
+            checkAchievements();
+            saveGameData();
         });
     } else if (!gameState.completedQuests.includes('chief_talked')) {
         startDialogue('마을 이장', [
@@ -1344,8 +1436,11 @@ function handleVillagerDialogue() {
             gameState.quest = null; clearArrow();
             addCoins(200); addDiamonds(20);
             showItemNotification('3스테이지 완료! 코인 +200, 다이아몬드 +20');
-            setTimeout(() => showStageComplete('3 STAGE CLEAR! 게임 클리어!', 5000), 2000);
-            saveGameData();
+            setTimeout(() => {
+                showStageComplete('3 STAGE CLEAR!', 4000);
+                gameState.stage = 4; saveGameData();
+                setTimeout(() => startStage4(), 5000);
+            }, 2000);
         });
     } else {
         startDialogue('마을 주민', ['좋은 하루 되거라.'], null);
@@ -1917,7 +2012,7 @@ async function uploadPosition() {
         z: Math.round(playerBody.position.z * 10) / 10,
         rotY: Math.round(yaw * 100) / 100,
         stage: gameState.stage,
-        inMine: gameState.insideMine,
+        inMine: gameState.insideMine || gameState.insideRuins || gameState.insideIceCave,
         hp: gameState.playerHp,
         maxHp: gameState.playerMaxHp,
         level: gameState.level,
@@ -2742,6 +2837,18 @@ function playBGM(type) {
         lfo.frequency.value = 0.3;
         lfoGain.gain.value = 15;
         bgmGain.gain.value = 0.04;
+    } else if (type === 'ice') {
+        bgmOsc.type = 'sine';
+        bgmOsc.frequency.value = 330;
+        lfo.frequency.value = 0.15;
+        lfoGain.gain.value = 25;
+        bgmGain.gain.value = 0.04;
+    } else if (type === 'icecave') {
+        bgmOsc.type = 'triangle';
+        bgmOsc.frequency.value = 165;
+        lfo.frequency.value = 0.1;
+        lfoGain.gain.value = 10;
+        bgmGain.gain.value = 0.03;
     }
 
     lfo.connect(lfoGain);
@@ -3116,6 +3223,7 @@ function dropMaterials(enemyName) {
         '독사': [['약초', 0.5], ['마법석', 0.1]],
         '폐광의 그림자': [['마법석', 0.6], ['철', 0.4], ['돌', 0.5]],
         '고대의 수호자': [['마법석', 0.8], ['철', 0.6], ['돌', 0.5]],
+        '얼음 늑대': [['철', 0.4], ['마법석', 0.3], ['얼음 파편', 0.6]],
     };
     const list = drops[enemyName];
     if (!list) return;
@@ -3375,6 +3483,478 @@ function buildGatheringSpots() {
         interactables.push(mesh);
     });
 }
+
+// ==================== STAGE 4: ICE BIOME ====================
+let babyDragonMesh = null;
+let iceWolves = [];
+let iceWolvesSpawned = false;
+
+function startStage4() {
+    gameState.stage = 4;
+    gameState.stage4Phase = 0;
+    gameState.iceTracesFound = 0;
+    gameState.insideIceCave = false;
+    gameState.babyDragonFollowing = false;
+    gameState.iceWolvesDefeated = false;
+    gameState.babyDragonDelivered = false;
+    iceWolvesSpawned = false;
+    showStageComplete('4스테이지 시작', 3000);
+    setTimeout(() => {
+        playerBody.position.set(-6, PLAYER_HEIGHT, 5);
+        yaw = 0; pitch = 0;
+        if (gameState.insideIceCave) exitIceCave();
+        buildIceBiome();
+        gameState.quest = 'talk_chief_s4';
+        showQuest('마을 이장에게 가기');
+        setArrowTarget(new THREE.Vector3(30, 2, 0));
+    }, 3000);
+}
+
+function buildIceBiome() {
+    // Snow ground (north of village, z < -80)
+    const snowGround = new THREE.Mesh(
+        new THREE.PlaneGeometry(120, 120),
+        new THREE.MeshLambertMaterial({ color: 0xe8f0f8 })
+    );
+    snowGround.rotation.x = -Math.PI / 2;
+    snowGround.position.set(0, 0.02, -140);
+    snowGround.receiveShadow = true;
+    scene.add(snowGround);
+
+    // Transition zone (gradual snow)
+    const transGround = new THREE.Mesh(
+        new THREE.PlaneGeometry(80, 30),
+        new THREE.MeshLambertMaterial({ color: 0xc8d8c0 })
+    );
+    transGround.rotation.x = -Math.PI / 2;
+    transGround.position.set(0, 0.015, -75);
+    transGround.receiveShadow = true;
+    scene.add(transGround);
+
+    // Frozen trees
+    const frozenTreeMat = new THREE.MeshLambertMaterial({ color: 0x88aacc, emissive: 0x112233 });
+    const frozenTrunkMat = new THREE.MeshLambertMaterial({ color: 0x9ab8d0 });
+    for (let i = 0; i < 20; i++) {
+        const tree = new THREE.Group();
+        const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.3, 2, 6), frozenTrunkMat);
+        trunk.position.y = 1; trunk.castShadow = true; tree.add(trunk);
+        const leaves = new THREE.Mesh(new THREE.ConeGeometry(1.2, 3, 6), frozenTreeMat);
+        leaves.position.y = 3.5; leaves.castShadow = true; tree.add(leaves);
+        // Snow cap
+        const snow = new THREE.Mesh(new THREE.ConeGeometry(0.8, 0.5, 6), new THREE.MeshLambertMaterial({ color: 0xffffff }));
+        snow.position.y = 5; tree.add(snow);
+        tree.position.set((Math.random() - 0.5) * 100, 0, -90 - Math.random() * 90);
+        scene.add(tree);
+    }
+
+    // Ice rocks
+    const iceRockMat = new THREE.MeshLambertMaterial({ color: 0x99ccee, transparent: true, opacity: 0.8, emissive: 0x224466 });
+    for (let i = 0; i < 12; i++) {
+        const rock = new THREE.Mesh(new THREE.DodecahedronGeometry(1 + Math.random() * 1.5), iceRockMat);
+        rock.position.set((Math.random() - 0.5) * 90, 0.5 + Math.random(), -95 - Math.random() * 80);
+        rock.castShadow = true;
+        scene.add(rock);
+    }
+
+    // Frozen lake
+    const lake = new THREE.Mesh(
+        new THREE.CircleGeometry(12, 24),
+        new THREE.MeshLambertMaterial({ color: 0xaaddff, transparent: true, opacity: 0.6, emissive: 0x336699 })
+    );
+    lake.rotation.x = -Math.PI / 2;
+    lake.position.set(-15, 0.03, -120);
+    scene.add(lake);
+
+    // Snow mountains
+    for (let i = 0; i < 5; i++) {
+        const mt = new THREE.Mesh(
+            new THREE.ConeGeometry(8 + Math.random() * 6, 15 + Math.random() * 10, 6),
+            new THREE.MeshLambertMaterial({ color: 0xddeeff })
+        );
+        mt.position.set(-40 + i * 20, 0, -185);
+        mt.castShadow = true; scene.add(mt);
+        // Snow peak
+        const peak = new THREE.Mesh(new THREE.ConeGeometry(4, 4, 6), new THREE.MeshLambertMaterial({ color: 0xffffff }));
+        peak.position.set(-40 + i * 20, 15 + Math.random() * 5, -185);
+        scene.add(peak);
+    }
+
+    // Ice crystals
+    const crystalMat = new THREE.MeshLambertMaterial({ color: 0x66ccff, transparent: true, opacity: 0.7, emissive: 0x2266aa });
+    for (let i = 0; i < 8; i++) {
+        const crystal = new THREE.Mesh(new THREE.OctahedronGeometry(0.6 + Math.random() * 0.5), crystalMat);
+        crystal.position.set((Math.random() - 0.5) * 80, 0.8 + Math.random() * 0.5, -100 - Math.random() * 70);
+        crystal.rotation.set(Math.random(), Math.random(), Math.random());
+        scene.add(crystal);
+    }
+
+    // Frozen waterfall
+    const waterfall = new THREE.Mesh(
+        new THREE.BoxGeometry(3, 10, 0.5),
+        new THREE.MeshLambertMaterial({ color: 0xbbddff, transparent: true, opacity: 0.5, emissive: 0x3366aa })
+    );
+    waterfall.position.set(30, 5, -150);
+    scene.add(waterfall);
+    const waterfallBase = new THREE.Mesh(
+        new THREE.CircleGeometry(4, 12),
+        new THREE.MeshLambertMaterial({ color: 0x99ccee, transparent: true, opacity: 0.6 })
+    );
+    waterfallBase.rotation.x = -Math.PI / 2;
+    waterfallBase.position.set(30, 0.03, -148);
+    scene.add(waterfallBase);
+
+    // Dragon traces
+    const traceData = [
+        { pos: [-10, 0.1, -100], text: '커다란 발자국이 눈 위에 남아 있다. 아이스 드래곤이 이곳을 지나간 것 같다.' },
+        { pos: [15, 0.1, -115], text: '얼음에 남은 날카로운 발톱 자국이다. 강력한 생물의 흔적이다.' },
+        { pos: [-20, 0.1, -135], text: '부서진 얼음 조각들이 흩어져 있다. 무언가 큰 것이 지나간 듯하다.' },
+        { pos: [5, 0.1, -150], text: '푸른 비늘이 떨어져 있다. 아이스 드래곤의 것이 틀림없다.' },
+    ];
+    traceData.forEach((t, i) => {
+        const trace = new THREE.Mesh(
+            new THREE.RingGeometry(0.3, 0.8, 6),
+            new THREE.MeshLambertMaterial({ color: 0x6699cc, emissive: 0x334466, side: THREE.DoubleSide })
+        );
+        trace.rotation.x = -Math.PI / 2;
+        trace.position.set(t.pos[0], t.pos[1], t.pos[2]);
+        trace.userData = { name: 'iceTrace_' + i, type: 'iceTrace', investigated: false, text: t.text };
+        scene.add(trace);
+        interactables.push(trace);
+    });
+
+    // Ice cave entrance
+    const caveEntrance = new THREE.Group();
+    const caveArch = new THREE.Mesh(
+        new THREE.TorusGeometry(4, 1, 8, 12, Math.PI),
+        new THREE.MeshLambertMaterial({ color: 0x88bbdd, emissive: 0x224455 })
+    );
+    caveArch.position.set(0, 4, -170);
+    caveArch.rotation.x = Math.PI;
+    caveEntrance.add(caveArch);
+    // Entrance crystals
+    for (const sx of [-5, 5]) {
+        const c = new THREE.Mesh(new THREE.OctahedronGeometry(1.2), crystalMat);
+        c.position.set(sx, 1.5, -170);
+        caveEntrance.add(c);
+    }
+    const caveDoor = new THREE.Mesh(
+        new THREE.BoxGeometry(8, 6, 0.5),
+        new THREE.MeshLambertMaterial({ color: 0x556677, transparent: true, opacity: 0.4 })
+    );
+    caveDoor.position.set(0, 3, -170);
+    caveDoor.userData = { name: '얼음 동굴 입구', type: 'iceCaveEntrance' };
+    caveEntrance.add(caveDoor);
+    scene.add(caveEntrance);
+    interactables.push(caveDoor);
+    buildings.iceCaveEntrance = caveDoor;
+
+    // Build ice cave interior
+    buildIceCaveInterior();
+}
+
+function buildIceCaveInterior() {
+    const floorMat = new THREE.MeshLambertMaterial({ color: 0x99bbdd });
+    const wallMat = new THREE.MeshLambertMaterial({ color: 0x7799bb, emissive: 0x112233 });
+
+    // Floor
+    const floor = new THREE.Mesh(new THREE.PlaneGeometry(80, 80), floorMat);
+    floor.rotation.x = -Math.PI / 2; floor.position.set(0, -30.01, -170);
+    floor.receiveShadow = true; scene.add(floor);
+
+    // Walls
+    const wallPositions = [[0, -27, -210], [0, -27, -130], [-40, -27, -170], [40, -27, -170]];
+    const wallSizes = [[80, 8, 1], [80, 8, 1], [1, 8, 80], [1, 8, 80]];
+    wallPositions.forEach(([x, y, z], i) => {
+        const wall = new THREE.Mesh(new THREE.BoxGeometry(wallSizes[i][0], wallSizes[i][1], wallSizes[i][2]), wallMat);
+        wall.position.set(x, y, z);
+        scene.add(wall);
+    });
+
+    // Ice pillars
+    const pillarMat = new THREE.MeshLambertMaterial({ color: 0xaaddff, transparent: true, opacity: 0.7, emissive: 0x2255aa });
+    for (let i = 0; i < 10; i++) {
+        const pillar = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.6, 5, 6), pillarMat);
+        pillar.position.set(-30 + Math.random() * 60, -27.5, -140 - Math.random() * 60);
+        pillar.castShadow = true; scene.add(pillar);
+    }
+
+    // Ice crystals inside
+    const crystalMat = new THREE.MeshLambertMaterial({ color: 0x66ccff, transparent: true, opacity: 0.7, emissive: 0x2266aa });
+    for (let i = 0; i < 15; i++) {
+        const crystal = new THREE.Mesh(new THREE.OctahedronGeometry(0.4 + Math.random() * 0.6), crystalMat);
+        crystal.position.set(-25 + Math.random() * 50, -29 + Math.random() * 2, -140 - Math.random() * 60);
+        crystal.rotation.set(Math.random(), Math.random(), Math.random());
+        scene.add(crystal);
+    }
+
+    // Frozen underground lake
+    const frozenLake = new THREE.Mesh(
+        new THREE.CircleGeometry(8, 16),
+        new THREE.MeshLambertMaterial({ color: 0x88ccee, transparent: true, opacity: 0.5, emissive: 0x336699 })
+    );
+    frozenLake.rotation.x = -Math.PI / 2;
+    frozenLake.position.set(10, -29.99, -180);
+    scene.add(frozenLake);
+
+    // Ancient ice ruins
+    for (let i = 0; i < 4; i++) {
+        const ruin = new THREE.Mesh(
+            new THREE.BoxGeometry(1.5, 3, 1.5),
+            new THREE.MeshLambertMaterial({ color: 0x7799aa, emissive: 0x223344 })
+        );
+        ruin.position.set(-15 + i * 10, -28.5, -195);
+        ruin.rotation.y = Math.random() * 0.3;
+        scene.add(ruin);
+    }
+
+    // Light sources inside cave
+    const iceLight = new THREE.PointLight(0x66aaff, 0.8, 30);
+    iceLight.position.set(0, -26, -170);
+    scene.add(iceLight);
+    const iceLight2 = new THREE.PointLight(0x4488cc, 0.5, 20);
+    iceLight2.position.set(0, -26, -195);
+    scene.add(iceLight2);
+
+    // Baby dragon nest
+    const nest = new THREE.Mesh(
+        new THREE.TorusGeometry(2, 0.5, 8, 12),
+        new THREE.MeshLambertMaterial({ color: 0x556677 })
+    );
+    nest.rotation.x = -Math.PI / 2;
+    nest.position.set(0, -29.8, -200);
+    scene.add(nest);
+
+    // Baby ice dragon
+    createBabyDragon(0, -29.5, -200);
+}
+
+function createBabyDragon(x, y, z) {
+    const group = new THREE.Group();
+    // Body - blue/white
+    const body = new THREE.Mesh(
+        new THREE.SphereGeometry(0.6, 10, 10),
+        new THREE.MeshLambertMaterial({ color: 0x88bbee, emissive: 0x224466 })
+    );
+    body.position.y = 0.6; body.castShadow = true; group.add(body);
+
+    // Head
+    const head = new THREE.Mesh(
+        new THREE.SphereGeometry(0.4, 10, 10),
+        new THREE.MeshLambertMaterial({ color: 0x99ccff, emissive: 0x224466 })
+    );
+    head.position.set(0, 1.1, -0.4); head.castShadow = true; group.add(head);
+
+    // Eyes
+    for (const sx of [-0.15, 0.15]) {
+        const eye = new THREE.Mesh(new THREE.SphereGeometry(0.06, 6, 6), new THREE.MeshBasicMaterial({ color: 0x00ccff }));
+        eye.position.set(sx, 1.2, -0.7); group.add(eye);
+    }
+
+    // Small horns
+    for (const sx of [-0.15, 0.15]) {
+        const horn = new THREE.Mesh(
+            new THREE.ConeGeometry(0.06, 0.3, 4),
+            new THREE.MeshLambertMaterial({ color: 0xccddff })
+        );
+        horn.position.set(sx, 1.4, -0.3); group.add(horn);
+    }
+
+    // Small wings
+    for (const side of [-1, 1]) {
+        const wing = new THREE.Mesh(
+            new THREE.PlaneGeometry(0.6, 0.4),
+            new THREE.MeshLambertMaterial({ color: 0xaaddff, transparent: true, opacity: 0.7, side: THREE.DoubleSide })
+        );
+        wing.position.set(side * 0.7, 0.9, 0);
+        wing.rotation.y = side * 0.3;
+        group.add(wing);
+    }
+
+    // Tail
+    const tail = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.05, 0.12, 0.8, 6),
+        new THREE.MeshLambertMaterial({ color: 0x88bbee })
+    );
+    tail.position.set(0, 0.4, 0.5);
+    tail.rotation.x = -0.5;
+    group.add(tail);
+
+    // White belly scales
+    const belly = new THREE.Mesh(
+        new THREE.SphereGeometry(0.45, 8, 8),
+        new THREE.MeshLambertMaterial({ color: 0xddeeff })
+    );
+    belly.position.set(0, 0.5, -0.15); belly.scale.set(1, 0.8, 0.6); group.add(belly);
+
+    group.position.set(x, y, z);
+    group.userData = { name: '아이스 드래곤 새끼', type: 'babyDragon' };
+    scene.add(group);
+    interactables.push(group);
+    babyDragonMesh = group;
+}
+
+function enterIceCave() {
+    if (gameState.insideIceCave) return;
+    gameState.insideIceCave = true;
+    playerBody.position.set(0, -30 + PLAYER_HEIGHT, -140);
+    scene.background = new THREE.Color(0x0a1a2a);
+    scene.fog = new THREE.Fog(0x0a1a2a, 5, 35);
+    showInvestigationText('얼음 동굴에 들어왔습니다...');
+    if (gameState.quest === 'find_nest') {
+        showQuest('아이스 드래곤의 둥지 찾기');
+        setArrowTarget(new THREE.Vector3(0, -29, -200));
+    }
+}
+
+function exitIceCave() {
+    gameState.insideIceCave = false;
+    playerBody.position.set(0, PLAYER_HEIGHT, -168);
+    scene.background = new THREE.Color(0xe0eeff);
+    scene.fog = new THREE.Fog(0xe0eeff, 40, 200);
+}
+
+function checkIceBiomeArea() {
+    if (!playerBody || gameState.stage !== 4) return;
+
+    // Enter ice biome notification
+    if (!gameState.enteredIceBiome && playerBody.position.z < -85 && !gameState.insideIceCave) {
+        gameState.enteredIceBiome = true;
+        showInvestigationText('얼음 바이옴에 도착했습니다.');
+        scene.background = new THREE.Color(0xc8ddef);
+        scene.fog = new THREE.Fog(0xc8ddef, 40, 200);
+        if (gameState.quest === 'go_ice_biome') {
+            gameState.quest = 'find_traces';
+            showQuest('아이스 드래곤의 흔적 찾기');
+        }
+    }
+
+    // Exit ice biome back to village
+    if (gameState.enteredIceBiome && playerBody.position.z > -75 && !gameState.insideIceCave) {
+        scene.background = new THREE.Color(0x87CEEB);
+        scene.fog = new THREE.Fog(0x87CEEB, 60, 250);
+    }
+
+    // Ice cave entrance proximity
+    if (!gameState.insideIceCave && buildings.iceCaveEntrance) {
+        const dist = playerBody.position.distanceTo(new THREE.Vector3(0, PLAYER_HEIGHT, -170));
+        if (dist < 5 && gameState.quest === 'find_nest') {
+            // handled by interact
+        }
+    }
+
+    // Inside ice cave - near baby dragon nest trigger cry sound
+    if (gameState.insideIceCave && playerBody.position.z < -185 && !gameState.heardDragonCry) {
+        gameState.heardDragonCry = true;
+        showInvestigationText('작은 드래곤의 울음소리가 들린다...');
+        playSFX('coin');
+        setArrowTarget(new THREE.Vector3(0, -29, -200));
+    }
+
+    // Spawn ice wolves when leaving cave with baby dragon
+    if (gameState.babyDragonFollowing && gameState.insideIceCave && !iceWolvesSpawned && playerBody.position.z > -155) {
+        iceWolvesSpawned = true;
+        gameState.quest = 'kill_wolves';
+        showQuest('얼음 늑대를 처치하고 이동하기');
+        spawnIceWolves();
+    }
+
+    // Check if all wolves defeated
+    if (gameState.quest === 'kill_wolves' && iceWolves.length > 0 && iceWolves.every(w => w.userData.hp <= 0 || !scene.children.includes(w))) {
+        const alive = iceWolves.filter(w => w.userData.hp > 0 && scene.children.includes(w));
+        if (alive.length === 0) {
+            gameState.iceWolvesDefeated = true;
+            showInvestigationText('얼음 늑대를 모두 처치했습니다!');
+            gameState.quest = 'escape_biome';
+            showQuest('아이스 드래곤 새끼와 함께 얼음 바이옴 탈출하기');
+            setArrowTarget(new THREE.Vector3(0, 1, -80));
+        }
+    }
+
+    // Exited ice cave with dragon
+    if (gameState.babyDragonFollowing && !gameState.insideIceCave && gameState.quest === 'escape_biome' && playerBody.position.z > -80) {
+        showInvestigationText('마을로 돌아가세요.');
+        gameState.quest = 'deliver_dragon';
+        showQuest('아이스 드래곤 새끼를 마을 이장에게 데려가기');
+        setArrowTarget(new THREE.Vector3(30, 2, 0));
+    }
+}
+
+function spawnIceWolves() {
+    iceWolves = [];
+    for (let i = 0; i < 3; i++) {
+        const wolf = new THREE.Group();
+        // Wolf body
+        const body = new THREE.Mesh(
+            new THREE.BoxGeometry(1.2, 0.7, 0.6),
+            new THREE.MeshLambertMaterial({ color: 0x99aacc, emissive: 0x112233 })
+        );
+        body.position.y = 0.6; body.castShadow = true; wolf.add(body);
+        // Head
+        const head = new THREE.Mesh(
+            new THREE.BoxGeometry(0.5, 0.5, 0.6),
+            new THREE.MeshLambertMaterial({ color: 0xaabbdd })
+        );
+        head.position.set(0.7, 0.8, 0); wolf.add(head);
+        // Eyes
+        for (const sz of [-0.15, 0.15]) {
+            const eye = new THREE.Mesh(new THREE.SphereGeometry(0.06, 6, 6), new THREE.MeshBasicMaterial({ color: 0x00aaff }));
+            eye.position.set(0.95, 0.9, sz); wolf.add(eye);
+        }
+        // Legs
+        for (const [lx, lz] of [[-0.3, -0.2], [-0.3, 0.2], [0.3, -0.2], [0.3, 0.2]]) {
+            const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 0.5, 4), new THREE.MeshLambertMaterial({ color: 0x8899bb }));
+            leg.position.set(lx, 0.25, lz); wolf.add(leg);
+        }
+        // Tail
+        const tail = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.08, 0.6, 4), new THREE.MeshLambertMaterial({ color: 0xaabbcc }));
+        tail.position.set(-0.8, 0.7, 0); tail.rotation.z = 0.5; wolf.add(tail);
+
+        wolf.position.set(-8 + i * 8, -30, -148);
+        wolf.userData = {
+            name: '얼음 늑대', type: 'enemy', hp: 50, maxHp: 50,
+            damage: [2, 6], attackCooldown: 0, attackInterval: 1.5
+        };
+        scene.add(wolf);
+        enemies.push(wolf);
+        iceWolves.push(wolf);
+    }
+}
+
+function updateBabyDragon(delta) {
+    if (!babyDragonMesh || !gameState.babyDragonFollowing) return;
+
+    const groundY = gameState.insideIceCave ? -30 : 0;
+
+    // Follow player
+    const targetPos = new THREE.Vector3(
+        playerBody.position.x - Math.sin(yaw) * 3,
+        groundY + 0.5 + Math.sin(Date.now() * 0.003) * 0.3,
+        playerBody.position.z + Math.cos(yaw) * 3
+    );
+
+    const dist = babyDragonMesh.position.distanceTo(playerBody.position);
+    if (dist > 15) {
+        // Teleport if too far
+        babyDragonMesh.position.copy(targetPos);
+    } else {
+        babyDragonMesh.position.lerp(targetPos, 0.04);
+    }
+
+    // Look at player
+    babyDragonMesh.lookAt(playerBody.position.x, groundY + 0.5, playerBody.position.z);
+
+    // Wing flap animation
+    babyDragonMesh.children.forEach(child => {
+        if (child.geometry && child.geometry.type === 'PlaneGeometry') {
+            child.rotation.z = Math.sin(Date.now() * 0.008) * 0.3;
+        }
+    });
+}
+
+// Stage 4 achievement
+achievementList.push(
+    { id: 'stage4', name: '드래곤 구조자', desc: '스테이지 4를 클리어하세요.', icon: '🐉', check: () => gameState.completedQuests.includes('stage4_complete') }
+);
 
 // Shake animation
 const shakeStyle = document.createElement('style');
